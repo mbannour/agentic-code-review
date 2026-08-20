@@ -64,12 +64,22 @@ type SelectedContext struct {
 	Evidence []SelectedEvidence
 	Analysis []SelectedAnalysis
 
+	// ProposedRuleChanges are the review-policy changes this pull request proposes.
+	// They are metadata for a human, not criteria for a reviewer.
+	ProposedRuleChanges []ProposedRuleChange
+
 	// Code is unchanged repository code retrieved as context. It is never part of
 	// the change under review, and a finding may never be attributed to it.
 	Code []SelectedCode
 
 	Profile TechnologyProfile
-	Stats   SelectionStats
+
+	// Focus is the change-risk assessment and the specialist perspectives it
+	// selected. It is assigned by the orchestrator after selection, because what
+	// to look for is decided from the change itself rather than from the budget.
+	Focus ReviewFocus
+
+	Stats SelectionStats
 }
 
 // PullRequestSummary is the pull request metadata worth carrying forward.
@@ -137,8 +147,22 @@ type SelectedRule struct {
 	Path    string
 	Content string
 
+	// Revision and Ref record which revision supplied this guidance. Authoritative
+	// rules come from the base branch; see review.RuleContext.
+	Revision string
+	Ref      string
+
 	OriginalBytes int
 	Truncated     bool
+}
+
+// ProposedRuleChange is a rule file the change under review touches, carried
+// without its content: a proposed rule is reported, never applied.
+type ProposedRuleChange struct {
+	Path      string
+	Kind      string
+	BaseBytes int
+	HeadBytes int
 }
 
 // SelectedEvidence is one bounded external document retained for review.
@@ -242,6 +266,33 @@ func (p TechnologyProfile) Technologies() []string {
 // HasTechnology reports whether the named framework or library was detected.
 func (p TechnologyProfile) HasTechnology(name string) bool {
 	return contains(p.Frameworks, name) || contains(p.Libraries, name)
+}
+
+// ReviewFocus is the deterministic assessment of what this change touches and
+// which review perspectives it therefore deserves.
+//
+// It mirrors changerisk.Profile and the routing plan in plain strings, so this
+// package and everything downstream depend on data rather than on those packages.
+// It is guidance about where to look — never a claim that a defect exists.
+type ReviewFocus struct {
+	RiskLevel   string
+	RiskAreas   []string
+	RiskReasons []string
+
+	// Specialists are the perspectives selected for this change, in routing order.
+	Specialists []FocusSpecialist
+}
+
+// Empty reports whether no focus was computed.
+func (f ReviewFocus) Empty() bool { return f.RiskLevel == "" && len(f.Specialists) == 0 }
+
+// FocusSpecialist is one selected review perspective.
+type FocusSpecialist struct {
+	ID      string
+	Title   string
+	Purpose string
+	Focus   []string
+	Reasons []string
 }
 
 // SelectionStats describes what the selection kept and what it left behind.

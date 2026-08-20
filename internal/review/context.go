@@ -76,7 +76,22 @@ type ChangeContext struct {
 // RuleContext holds the repository-specific review guidance that applies to this
 // snapshot.
 type RuleContext struct {
+	// Documents are the authoritative rules — the policy in force, read from the
+	// branch the change targets.
 	Documents []RuleDocument
+
+	// ProposedChanges are rule files this change adds, modifies, or removes. They
+	// are carried as metadata only: their text is never review guidance, because a
+	// change must not be able to rewrite the standard it is judged against.
+	ProposedChanges []RuleChange
+}
+
+// RuleChange is a proposed modification to review policy, without its content.
+type RuleChange struct {
+	Path      string
+	Kind      string
+	BaseBytes int
+	HeadBytes int
 }
 
 // RuleDocument is one piece of repository review guidance.
@@ -89,6 +104,10 @@ type RuleDocument struct {
 
 	// Truncated reports whether Content was cut down to fit a size limit.
 	Truncated bool
+
+	// Revision and Ref record which revision supplied this guidance.
+	Revision string
+	Ref      string
 }
 
 // EvidenceContext is external context normalized independently of its transport.
@@ -219,7 +238,7 @@ func buildChangeContext(files []github.ChangedFile) ChangeContext {
 // buildRuleContext copies the loaded rule documents into the review domain,
 // preserving their priority order.
 func buildRuleContext(rules reporules.Rules) RuleContext {
-	if len(rules.Documents) == 0 {
+	if len(rules.Documents) == 0 && len(rules.ProposedChanges) == 0 {
 		return RuleContext{}
 	}
 
@@ -229,9 +248,20 @@ func buildRuleContext(rules reporules.Rules) RuleContext {
 			Path:      d.Path,
 			Content:   d.Content,
 			Truncated: d.Truncated,
+			Revision:  string(d.Revision),
+			Ref:       d.Ref,
 		})
 	}
-	return RuleContext{Documents: documents}
+
+	changes := make([]RuleChange, 0, len(rules.ProposedChanges))
+	for _, c := range rules.ProposedChanges {
+		changes = append(changes, RuleChange{
+			Path: c.Path, Kind: string(c.Kind),
+			BaseBytes: c.BaseBytes, HeadBytes: c.HeadBytes,
+		})
+	}
+
+	return RuleContext{Documents: documents, ProposedChanges: changes}
 }
 
 // buildTicketContext copies a Jira issue into the review domain, including its

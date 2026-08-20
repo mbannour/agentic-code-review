@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/your-company/agentic-code-review/internal/analysis"
+	"github.com/your-company/agentic-code-review/internal/changerisk"
 	"github.com/your-company/agentic-code-review/internal/claude"
 	"github.com/your-company/agentic-code-review/internal/contextselect"
 	"github.com/your-company/agentic-code-review/internal/evaluation"
@@ -20,6 +21,7 @@ import (
 	"github.com/your-company/agentic-code-review/internal/reporules"
 	"github.com/your-company/agentic-code-review/internal/retrieval"
 	"github.com/your-company/agentic-code-review/internal/review"
+	"github.com/your-company/agentic-code-review/internal/specialist"
 	"github.com/your-company/agentic-code-review/internal/technology"
 	"github.com/your-company/agentic-code-review/internal/verification"
 )
@@ -221,9 +223,11 @@ func runReview(args []string) error {
 		issue = &fetched
 	}
 
-	// Read the repository's own guidance from the exact snapshot under review,
-	// so rules the pull request itself changes are the ones that apply.
-	rules, err := reporules.NewLoader(client).Load(ctx, pr.Owner, pr.Repo, details.HeadSHA)
+	// Read the repository's own guidance from the branch the change targets, not
+	// from the change itself: a pull request must not be able to weaken the policy
+	// that judges it. Rule files the change touches are reported separately.
+	rules, err := reporules.NewLoader(client).LoadForPullRequest(
+		ctx, pr.Owner, pr.Repo, details.BaseSHA, details.HeadSHA)
 	if err != nil {
 		return fmt.Errorf("load repository rules: %w", err)
 	}
@@ -271,6 +275,15 @@ func runReview(args []string) error {
 		printAnalysis(analysisResult)
 	}
 
+	// Before anything expensive, decide deterministically what this change touches.
+	// The profile costs nothing, is reproducible, and is what selects the review
+	// perspectives worth paying for.
+	riskProfile := changerisk.NewAnalyzer().Analyze(riskChanges(files))
+	printChangeRisk(riskProfile)
+
+	routing := specialist.NewRouter().Route(riskProfile)
+	printRouting(routing)
+
 	// A diff says what changed. What the changed code calls, and who called what
 	// it changed, are in files the pull request never touched — so retrieval reads
 	// the checkout for exactly those regions. It is opt-in because it is the one
@@ -292,6 +305,10 @@ func runReview(args []string) error {
 	if err != nil {
 		return fmt.Errorf("context selection: %w", err)
 	}
+
+	// What to look for is decided from the change, not from the budget, so the
+	// focus is attached after selection rather than competing for bytes with it.
+	selected.Focus = reviewFocus(riskProfile, routing)
 
 	printSelection(selected)
 
@@ -989,6 +1006,94 @@ func formatBytes(n int) string {
 }
 
 // printAnalysisSkipped reports that no checks were run at all.
+// riskChanges narrows the changed files to what risk analysis needs.
+func riskChanges(files []github.ChangedFile) []changerisk.Change {
+	changes := make([]changerisk.Change, 0, len(files))
+	for _, file := range files {
+		changes = append(changes, changerisk.Change{
+			Path: file.Filename, Status: file.Status, Patch: file.Patch,
+			Additions: file.Additions, Deletions: file.Deletions,
+		})
+	}
+	return changes
+}
+
+// reviewFocus flattens the risk profile and routing plan into the plain data the
+// context and the prompt consume.
+func reviewFocus(profile changerisk.Profile, plan specialist.Plan) contextselect.ReviewFocus {
+	focus := contextselect.ReviewFocus{
+		RiskLevel:   string(profile.Level),
+		RiskReasons: profile.Reasons(),
+	}
+	for _, area := range profile.Areas {
+		focus.RiskAreas = append(focus.RiskAreas, string(area))
+	}
+	for _, selection := range plan.Selected {
+		focus.Specialists = append(focus.Specialists, contextselect.FocusSpecialist{
+			ID:      string(selection.Specialist.ID),
+			Title:   selection.Specialist.Title,
+			Purpose: selection.Specialist.Purpose,
+			Focus:   selection.Specialist.Focus,
+			Reasons: selection.Reasons,
+		})
+	}
+	return focus
+}
+
+// printChangeRisk reports what the change was found to touch, with the signal
+// behind every area. A risk band a developer cannot argue with is one they cannot
+// trust.
+func printChangeRisk(profile changerisk.Profile) {
+	fmt.Println()
+	fmt.Println("Change Risk")
+	fmt.Println()
+	fmt.Printf("Overall:       %s\n", profile.Level.Display())
+	fmt.Printf("Changed files: %d (%d source, +%d/-%d lines)\n",
+		profile.ChangedFiles, profile.SourceFiles, profile.Additions, profile.Deletions)
+
+	if profile.Empty() {
+		fmt.Println("Areas:         none identified")
+		return
+	}
+
+	fmt.Println()
+	fmt.Println("Areas:")
+	for _, area := range profile.Areas {
+		signals := profile.SignalsFor(area)
+		fmt.Printf("  %-16s", area)
+		if len(signals) > 0 {
+			fmt.Printf(" %s", signals[0].Detail)
+			if signals[0].Path != "" {
+				fmt.Printf(" — %s", signals[0].Path)
+			}
+		}
+		fmt.Println()
+	}
+	fmt.Println()
+	fmt.Println("These areas say where to look. They are signals, not findings.")
+}
+
+// printRouting reports which perspectives were selected, and which were not.
+// A perspective's absence should be as explainable as its presence.
+func printRouting(plan specialist.Plan) {
+	fmt.Println()
+	fmt.Println("Specialist Routing")
+	fmt.Println()
+
+	if len(plan.Selected) == 0 {
+		fmt.Println("  none selected: no perspective is called for by this change")
+	}
+	for _, selection := range plan.Selected {
+		fmt.Printf("SELECTED  %s\n", selection.Specialist.Title)
+		for _, reason := range selection.Reasons {
+			fmt.Printf("          %s\n", reason)
+		}
+	}
+	for _, skip := range plan.Skipped {
+		fmt.Printf("skipped   %-14s %s\n", skip.ID, skip.Reason)
+	}
+}
+
 // retrievalChanges narrows the changed files to what retrieval needs: a path and
 // the patch whose changed lines name the symbols worth resolving.
 func retrievalChanges(files []github.ChangedFile) []retrieval.Change {

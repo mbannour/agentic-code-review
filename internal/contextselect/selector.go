@@ -139,6 +139,15 @@ func (s *Selector) SelectWithRetrieval(
 	rules, ruleBytes, ruleOriginal := selectRules(reviewCtx.Rules.Documents, budget)
 	selected.Rules = rules
 
+	// Proposed policy changes are copied wholesale: they carry no content, so they
+	// cost a handful of bytes and cannot crowd anything out.
+	for _, change := range reviewCtx.Rules.ProposedChanges {
+		selected.ProposedRuleChanges = append(selected.ProposedRuleChanges, ProposedRuleChange{
+			Path: change.Path, Kind: change.Kind,
+			BaseBytes: change.BaseBytes, HeadBytes: change.HeadBytes,
+		})
+	}
+
 	evidenceBudget := budget
 	evidenceBudget.Evidence = minInt(budget.Evidence, remainingBudget(budget.Total, ticketBytes+ruleBytes))
 	documents, evidenceBytes, evidenceOriginal, evidenceDropped :=
@@ -458,7 +467,10 @@ func selectRules(documents []review.RuleDocument, budget Budget) ([]SelectedRule
 		size := len(d.Content)
 		original += size
 
-		rule := SelectedRule{Path: d.Path, OriginalBytes: size}
+		rule := SelectedRule{
+			Path: d.Path, OriginalBytes: size,
+			Revision: d.Revision, Ref: d.Ref,
+		}
 
 		switch {
 		case size <= remaining:

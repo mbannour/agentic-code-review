@@ -177,6 +177,11 @@ type PullRequestDetails struct {
 	HeadBranch  string
 	HeadSHA     string
 	AuthorLogin string
+
+	// BaseSHA is the commit the pull request targets. It is the revision whose
+	// review guidance is authoritative: rules a pull request proposes cannot be
+	// the rules that judge it.
+	BaseSHA string
 }
 
 // pullRequestResponse mirrors the wire format so the nested shape stays out of
@@ -193,6 +198,7 @@ type pullRequestResponse struct {
 	} `json:"user"`
 	Base struct {
 		Ref string `json:"ref"`
+		SHA string `json:"sha"`
 	} `json:"base"`
 	Head struct {
 		Ref string `json:"ref"`
@@ -209,6 +215,7 @@ func (r pullRequestResponse) toDetails() PullRequestDetails {
 		Draft:       r.Draft,
 		HTMLURL:     r.HTMLURL,
 		BaseBranch:  r.Base.Ref,
+		BaseSHA:     r.Base.SHA,
 		HeadBranch:  r.Head.Ref,
 		HeadSHA:     r.Head.SHA,
 		AuthorLogin: r.User.Login,
