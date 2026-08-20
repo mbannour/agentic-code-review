@@ -56,6 +56,12 @@ const (
 	// ReasonTotalLimit means the overall published-finding bound was reached.
 	ReasonTotalLimit ReasonCode = "total_limit"
 
+	// ReasonAlreadyReported means a previous ARC review of this pull request already
+	// published this finding. It demotes an inline comment to the body rather than
+	// suppressing it: the finding still stands, but re-commenting on a line the author
+	// has already seen is noise, and noise is what makes a reviewer stop reading.
+	ReasonAlreadyReported ReasonCode = "already_reported"
+
 	// ReasonCategoryPolicy means this finding's category places it in the body rather than
 	// on a line.
 	ReasonCategoryPolicy ReasonCode = "category_policy"

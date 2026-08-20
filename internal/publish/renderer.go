@@ -167,15 +167,56 @@ func (r Renderer) ReviewBody(input ReviewInput) string {
 		fmt.Fprintf(&out, "Jira: `%s`\n\n", key)
 	}
 
+	writeDeltaSection(&out, input.Plan)
 	writeResultSection(&out, input.Plan)
 	writeInlineSection(&out, input.Plan)
 	writeAdditionalSection(&out, input.Plan)
 	writeAnalysisSection(&out, input.Checks)
 
 	fmt.Fprintf(&out, "---\n%s\n", signature)
-	fmt.Fprintf(&out, "\n%s\n", Marker{HeadSHA: input.HeadSHA}.Render())
 
-	return clamp(out.String(), MaxReviewBodyBytes)
+	// The markers are appended after clamping, never before it. They are what a
+	// later run recognizes this review by: a body long enough to be cut would
+	// otherwise lose its own identity and be republished as a duplicate.
+	markers := fmt.Sprintf("\n%s\n%s\n",
+		Marker{HeadSHA: input.HeadSHA}.Render(),
+		MarkerFor(input.Plan).Render())
+
+	return clamp(out.String(), MaxReviewBodyBytes-len(markers)) + markers
+}
+
+// writeDeltaSection reports how this review compares with the previous one.
+//
+// It leads the body because it is what a returning author wants first: what their
+// last push resolved. The wording is deliberately "no longer reported" rather than
+// "fixed" — ARC knows only what it is not saying any more, not that the underlying
+// problem is gone.
+func writeDeltaSection(out *strings.Builder, plan Plan) {
+	delta := plan.Delta
+	if !delta.Known {
+		return
+	}
+
+	out.WriteString("### Since the previous review\n\n")
+	fmt.Fprintf(out, "Compared with the review of `%s`:\n\n", delta.PreviousHeadSHA)
+
+	if delta.Resolved > 0 {
+		fmt.Fprintf(out, "- %d no longer reported\n", delta.Resolved)
+	}
+	if delta.Persisting > 0 {
+		fmt.Fprintf(out, "- %d still reported\n", delta.Persisting)
+	}
+	if delta.New > 0 {
+		fmt.Fprintf(out, "- %d newly reported\n", delta.New)
+	}
+	if delta.Resolved == 0 && delta.Persisting == 0 && delta.New == 0 {
+		out.WriteString("- nothing reported either time\n")
+	}
+	if delta.Persisting > 0 {
+		out.WriteString("\nFindings reported before are listed in the body rather than on the diff, " +
+			"so this review does not comment again on lines already discussed.\n")
+	}
+	out.WriteString("\n")
 }
 
 // writeResultSection reports the count and the severity mix.

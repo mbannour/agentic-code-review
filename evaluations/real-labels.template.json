@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "name": "REPLACE-ME-suite-name",
+  "cases": [
+    {
+      "id": "owner/repo#123",
+      "description": "One sentence on what was actually wrong, from the human record.",
+      "source": "https://github.com/owner/repo/pull/123",
+      "findings": [
+        {
+          "id": "REQ-001",
+          "category": "requirement",
+          "file": "path/to/changed/file.scala",
+          "start_line": 1,
+          "end_line": 1,
+          "title_contains": ["term"]
+        }
+      ]
+    },
+    {
+      "id": "owner/repo#124",
+      "description": "A pull request that was genuinely clean. Keep several of these: without them the suite cannot measure false positives.",
+      "source": "https://github.com/owner/repo/pull/124",
+      "findings": []
+    }
+  ]
+}

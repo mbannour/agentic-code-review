@@ -53,6 +53,11 @@ type Plan struct {
 	// HeadSHA is the commit the findings were derived from, and the commit any
 	// published review will be pinned to.
 	HeadSHA string
+
+	// Delta compares this plan with the previous ARC review of the same pull
+	// request. Its zero value means no previous review was found, which is not the
+	// same as a previous review that found nothing.
+	Delta Delta
 }
 
 // TotalFindings is how many findings the plan accounts for.

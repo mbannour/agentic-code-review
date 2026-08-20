@@ -52,6 +52,14 @@ type Check struct {
 	// pull request.
 	RequiresFiles []string
 
+	// ScopeToChangedPaths appends the pull request's changed files to Args.
+	//
+	// It exists for scanners: running one over the whole repository reports
+	// pre-existing findings in untouched code, which the changed-file scope rule
+	// rejects anyway. A check with no eligible changed path is skipped rather than
+	// run against everything.
+	ScopeToChangedPaths bool
+
 	// RequiresDirectory is a local dependency directory needed before the command
 	// is meaningful. It is used for build systems such as npm, where running a
 	// project script without installed dependencies produces environment noise rather

@@ -50,9 +50,9 @@ func TestChecksForProfile(t *testing.T) {
 		want    []string
 	}{
 		{
-			name:    "Go profile selects the Go checks",
+			name:    "Go profile selects the Go checks and the Go security scanner",
 			profile: goProfile(),
-			want:    []string{"go test ./...", "go vet ./..."},
+			want:    []string{"go test ./...", "go vet ./...", "gosec -quiet ./..."},
 		},
 		{
 			name:    "Scala profile selects sbt compile",
@@ -62,14 +62,16 @@ func TestChecksForProfile(t *testing.T) {
 		{
 			name:    "a mixed profile selects both toolchains",
 			profile: mixedProfile(),
-			want:    []string{"go test ./...", "go vet ./...", "sbt -batch compile"},
+			want: []string{
+				"go test ./...", "go vet ./...", "sbt -batch compile", "gosec -quiet ./...",
+			},
 		},
 		{
 			// Go sources without a manifest still get the Go tool, which is
 			// universal for Go code.
 			name:    "Go sources alone still select the Go checks",
 			profile: technology.Profile{Languages: []technology.Language{technology.LanguageGo}},
-			want:    []string{"go test ./...", "go vet ./..."},
+			want:    []string{"go test ./...", "go vet ./...", "gosec -quiet ./..."},
 		},
 		{
 			// Scala without sbt selects nothing: the repository may be built by
@@ -168,9 +170,11 @@ func TestToolchainsForProfile(t *testing.T) {
 		profile technology.Profile
 		want    []string
 	}{
-		{name: "go", profile: goProfile(), want: []string{"go"}},
+		// gosec applies wherever Go does: a security scanner is part of reviewing Go,
+		// and its absence on the machine is a skip rather than a missing toolchain.
+		{name: "go", profile: goProfile(), want: []string{"go", "gosec"}},
 		{name: "scala", profile: scalaProfile(), want: []string{"sbt"}},
-		{name: "mixed", profile: mixedProfile(), want: []string{"go", "sbt"}},
+		{name: "mixed", profile: mixedProfile(), want: []string{"go", "sbt", "gosec"}},
 		{name: "none", profile: technology.Profile{}, want: nil},
 	}
 
@@ -205,26 +209,37 @@ func (r *missingToolRunner) LookupTool(name string) error {
 // TestMissingToolIsSkippedNotFatal checks that a missing toolchain degrades the review
 // instead of ending it. A developer without sbt should still get a review.
 func TestMissingToolIsSkippedNotFatal(t *testing.T) {
+	// Each expectation names its own reason, because a profile's checks can come
+	// from more than one executable: a Go repository runs the Go tool and the gosec
+	// scanner, and each is absent for its own stated reason.
+	type expectation struct {
+		name   string
+		reason string
+	}
+
 	tests := []struct {
-		name       string
-		profile    technology.Profile
-		files      []string
-		wantSkips  []string
-		wantReason string
+		name      string
+		profile   technology.Profile
+		files     []string
+		wantSkips []expectation
 	}{
 		{
-			name:       "sbt is not installed",
-			profile:    scalaProfile(),
-			files:      []string{"build.sbt"},
-			wantSkips:  []string{"sbt-compile"},
-			wantReason: "sbt executable not found",
+			name:    "sbt is not installed",
+			profile: scalaProfile(),
+			files:   []string{"build.sbt"},
+			wantSkips: []expectation{
+				{"sbt-compile", "sbt executable not found"},
+			},
 		},
 		{
-			name:       "go is not installed",
-			profile:    goProfile(),
-			files:      []string{"go.mod"},
-			wantSkips:  []string{"go-test", "go-vet"},
-			wantReason: "go executable not found",
+			name:    "go is not installed",
+			profile: goProfile(),
+			files:   []string{"go.mod"},
+			wantSkips: []expectation{
+				{"go-test", "go executable not found"},
+				{"go-vet", "go executable not found"},
+				{"gosec", "gosec executable not found"},
+			},
 		},
 	}
 
@@ -247,11 +262,11 @@ func TestMissingToolIsSkippedNotFatal(t *testing.T) {
 			}
 			for i, want := range tt.wantSkips {
 				got := result.SkippedChecks()[i]
-				if got.Name != want {
-					t.Errorf("skipped[%d] = %q, want %q", i, got.Name, want)
+				if got.Name != want.name {
+					t.Errorf("skipped[%d] = %q, want %q", i, got.Name, want.name)
 				}
-				if got.SkipReason != tt.wantReason {
-					t.Errorf("%s reason = %q, want %q", got.Name, got.SkipReason, tt.wantReason)
+				if got.SkipReason != want.reason {
+					t.Errorf("%s reason = %q, want %q", got.Name, got.SkipReason, want.reason)
 				}
 				if got.Failed() {
 					t.Errorf("%s counts as failed; a skipped check has not failed", got.Name)

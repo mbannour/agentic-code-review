@@ -261,7 +261,9 @@ func runReview(args []string) error {
 	} else {
 		printAnalysisProgressHeader()
 		runner := newAnalysisProgressRunner(analysis.NewCommandRunner())
-		analyzer := analysis.NewAnalyzerForProfile(runner, profile)
+		// The changed-file list is passed so a scanner can be scoped to what this
+		// pull request touched, rather than reporting the repository's history.
+		analyzer := analysis.NewAnalyzerForProfileWithChanges(runner, profile, changedPaths(files))
 		analysisResult, err = analyzer.Analyze(ctx, *repoDir)
 		if err != nil {
 			return fmt.Errorf("deterministic analysis: %w", err)
@@ -403,12 +405,24 @@ func runClaudeReview(ctx context.Context, stage claudeStage) error {
 	// One deterministic policy decides every disposition, from the reviewer's evidence
 	// strength, the verifier's verdict and evidence strength, the severity, the category, and
 	// whether GitHub has a line to attach the comment to. Neither model has a vote.
+	// What ARC already said about this pull request changes where a repeat finding
+	// goes, never whether it stands. A failed read leaves the history unknown, which
+	// is the same as the first review of a pull request.
+	publisher := publish.NewPublisher(stage.api)
+	history, err := publisher.LoadHistory(ctx, stage.pullRequest, stage.reviewedSHA)
+	if err != nil {
+		printHistoryUnavailable(err)
+		history = publish.History{}
+	}
+	printHistory(history)
+
 	mapper := publish.NewMapperFromChangedFiles(stage.changedFiles)
-	plan := publish.NewPolicy().BuildPlan(
+	plan := publish.NewPolicy().BuildPlanWithHistory(
 		publish.CandidatesFrom(report),
 		mapper,
 		stage.reviewedSHA,
 		outcome.Result.Summary,
+		history,
 	)
 
 	printPolicyDecisions(plan)
@@ -447,6 +461,45 @@ func captureRun(stage claudeStage, result findings.ReviewResult) error {
 	fmt.Printf("Findings: %d\n", len(set.Cases[0].Findings))
 	fmt.Printf("Written:  %s\n", stage.capture.path)
 	return nil
+}
+
+// printHistory reports what a previous ARC review of this pull request published.
+func printHistory(history publish.History) {
+	if !history.Known {
+		return
+	}
+
+	fmt.Println()
+	fmt.Println("Previous Review")
+	fmt.Println()
+	fmt.Printf("Reviewed head: %s\n", history.HeadSHA)
+	fmt.Printf("Published:     %d findings\n", history.Count())
+	fmt.Println()
+	fmt.Println("Findings reported there are placed in the review body rather than on the")
+	fmt.Println("diff, so this review does not comment again on lines already discussed.")
+}
+
+// printHistoryUnavailable states that the comparison could not be made. Silence
+// here would look like a pull request ARC had never reviewed.
+func printHistoryUnavailable(err error) {
+	fmt.Println()
+	fmt.Println("Previous Review")
+	fmt.Println()
+	fmt.Printf("  unavailable: %v\n", err)
+	fmt.Println("  every finding is treated as newly reported")
+}
+
+// printDelta reports how the plan compares with the previous review.
+func printDelta(delta publish.Delta) {
+	if !delta.Known {
+		return
+	}
+
+	fmt.Println()
+	fmt.Printf("Since %s:\n", delta.PreviousHeadSHA)
+	fmt.Printf("  No longer reported: %d\n", delta.Resolved)
+	fmt.Printf("  Still reported:     %d\n", delta.Persisting)
+	fmt.Printf("  Newly reported:     %d\n", delta.New)
 }
 
 // printVerification renders the verdict on each candidate finding, then the tally.
@@ -575,6 +628,8 @@ func printPolicyDecisions(plan publish.Plan) {
 
 // printPlan renders the publication plan: the counts, then where each finding landed.
 func printPlan(plan publish.Plan) {
+	defer printDelta(plan.Delta)
+
 	stats := plan.Stats
 
 	fmt.Println()

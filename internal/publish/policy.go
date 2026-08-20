@@ -181,16 +181,55 @@ func (p Policy) BuildPlan(
 	headSHA string,
 	summary string,
 ) Plan {
+	return p.BuildPlanWithHistory(candidates, mapper, headSHA, summary, History{})
+}
+
+// BuildPlanWithHistory decides dispositions knowing what a previous ARC review of
+// the same pull request already published.
+//
+// History changes placement and nothing else. A finding ARC already reported is
+// still a finding: it moves from a line comment to the body, so a second review
+// does not comment again on a line the author has already read. It is never
+// suppressed on this ground, because "you were told once" is not evidence that a
+// problem was fixed — and the author may have pushed a change that did not address
+// it.
+func (p Policy) BuildPlanWithHistory(
+	candidates []Candidate,
+	mapper Mapper,
+	headSHA string,
+	summary string,
+	history History,
+) Plan {
 	config := p.Config()
 
 	decisions := make([]Decision, 0, len(candidates))
 	for _, candidate := range candidates {
-		decisions = append(decisions, p.evaluate(candidate, mapper))
+		decision := p.evaluate(candidate, mapper)
+		decisions = append(decisions, demoteIfAlreadyReported(decision, history))
 	}
 
 	p.applyQuotas(decisions, config)
 
-	return assemblePlan(decisions, headSHA, summary)
+	plan := assemblePlan(decisions, headSHA, summary)
+	plan.Delta = DeltaFor(plan, history)
+	return plan
+}
+
+// demoteIfAlreadyReported moves a repeat finding off the diff and into the body.
+func demoteIfAlreadyReported(decision Decision, history History) Decision {
+	if decision.Disposition != DispositionInline || !history.Reports(decision.Finding) {
+		return decision
+	}
+	return summarize(decision, reason(ReasonAlreadyReported,
+		"reported in the review of %s", shortSHA(history.HeadSHA)))
+}
+
+// shortSHA abbreviates a commit for a human-readable reason.
+func shortSHA(sha string) string {
+	if len(sha) > 8 {
+		return sha[:8]
+	}
+	return sha
 }
 
 // Evaluate decides one finding's disposition, before quotas.

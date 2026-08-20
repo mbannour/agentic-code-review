@@ -44,7 +44,10 @@ type Toolchain interface {
 // toolchain here. Nothing downstream changes, because everything downstream consumes
 // Check values.
 func Toolchains() []Toolchain {
-	return []Toolchain{goToolchain{}, sbtToolchain{}, npmToolchain{}}
+	return []Toolchain{
+		goToolchain{}, sbtToolchain{}, npmToolchain{},
+		gosecToolchain{}, semgrepToolchain{},
+	}
 }
 
 // npmToolchain runs the production build for npm-managed Next.js applications.

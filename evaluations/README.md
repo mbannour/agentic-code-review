@@ -23,6 +23,11 @@ revert. Include some pull requests that were genuinely clean — a suite with an
 in every case cannot measure false positives, which is the failure mode that costs a
 reviewer's trust.
 
+Start from [`real-labels.template.json`](real-labels.template.json) — it is a shape to
+copy, not data. Every value in it is a placeholder, and it is deliberately not named
+`real-labels.json` so an unedited template can never be scored as if it were ground
+truth.
+
 **2. Label each one by hand,** from the human record rather than from an ARC run.
 Labelling what ARC found makes the score meaningless. One case per pull request:
 
@@ -98,6 +103,18 @@ arc evaluate \
 
 The report gives aggregate and per-category precision, recall, and F1; per-case false
 positives and missed labels; and how many clean cases stayed clean.
+
+## Iterating on the same pull request
+
+A re-review is not a fresh case. When the author pushes fixes and ARC reviews again,
+the published review records what it reported, and the next run reads that back: a
+finding reported before is placed in the body rather than commented on the diff again,
+and the body opens with what is no longer reported.
+
+For measurement, capture each round as its own case ID — `owner/repo#123@round1`,
+`@round2` — and label each round separately. Rounds are different states of the code,
+and scoring them as one case would hide exactly what you want to see: whether the
+second review was quieter than the first about the same lines.
 
 ## Comparing experiments
 

@@ -21,6 +21,11 @@ const (
 	// exist in the checkout.
 	skipReasonMissingFilesFormat = "%s not found"
 
+	// SkipReasonNoScannablePaths is recorded for a scoped scanner when the pull
+	// request changed nothing it scans. Scanning everything instead would report
+	// findings about code this pull request never touched.
+	SkipReasonNoScannablePaths = "no changed files of a scannable type"
+
 	// skipReasonMissingToolFormat is recorded when the tool itself is not installed.
 	// A missing toolchain degrades the review's evidence; it is not a failure of the
 	// pull request, and it must not end the run.
@@ -37,6 +42,11 @@ const (
 type Analyzer struct {
 	runner Runner
 	checks []Check
+
+	// changedPaths are the pull request's changed files, used only by checks that
+	// declare ScopeToChangedPaths. They come from the GitHub change list, never
+	// from repository content.
+	changedPaths []string
 }
 
 // NewAnalyzer returns an Analyzer running the default check set through runner.
@@ -54,6 +64,25 @@ func NewAnalyzerForProfile(runner Runner, profile technology.Profile) *Analyzer 
 // still come from calling code, never from external input.
 func NewAnalyzerWithChecks(runner Runner, checks []Check) *Analyzer {
 	return &Analyzer{runner: runner, checks: copyChecks(checks)}
+}
+
+// NewAnalyzerForProfileWithChanges returns an Analyzer that can also run checks
+// scoped to the pull request's changed files.
+//
+// The paths are filtered before they reach an argument list: only file types a
+// scanner reads, only plain relative paths, and only up to a bound.
+func NewAnalyzerForProfileWithChanges(runner Runner, profile technology.Profile, changedPaths []string) *Analyzer {
+	analyzer := NewAnalyzerWithChecks(runner, ChecksForProfile(profile))
+	analyzer.changedPaths = scopedPaths(changedPaths)
+	return analyzer
+}
+
+// ScopedPaths returns the changed paths this analyzer would pass to a scoped
+// check, after filtering.
+func (a *Analyzer) ScopedPaths() []string {
+	out := make([]string, len(a.changedPaths))
+	copy(out, a.changedPaths)
+	return out
 }
 
 // Checks returns the checks this analyzer will run, in order.
@@ -96,7 +125,7 @@ func (a *Analyzer) Analyze(ctx context.Context, repoDir string) (Result, error) 
 			continue
 		}
 
-		checkResult := a.runner.Run(ctx, dir, check)
+		checkResult := a.runner.Run(ctx, dir, a.resolve(check))
 		if checkResult.ExecError != "" {
 			return Result{}, fmt.Errorf("run check %s (%s): %s",
 				check.Name, check.DisplayCommand(), checkResult.ExecError)
@@ -106,6 +135,25 @@ func (a *Analyzer) Analyze(ctx context.Context, repoDir string) (Result, error) 
 	}
 
 	return result, nil
+}
+
+// resolve returns the check as it will actually be executed, with the changed
+// paths appended for a scoped scanner.
+//
+// The paths are appended last, after every code-owned flag, so no configured value
+// can be read as a flag by the tool.
+func (a *Analyzer) resolve(check Check) Check {
+	if !check.ScopeToChangedPaths || len(a.changedPaths) == 0 {
+		return check
+	}
+
+	resolved := check
+	resolved.Args = make([]string, 0, len(check.Args)+len(a.changedPaths)+1)
+	resolved.Args = append(resolved.Args, check.Args...)
+	// An explicit end-of-flags marker, so a path can never be taken for an option.
+	resolved.Args = append(resolved.Args, "--")
+	resolved.Args = append(resolved.Args, a.changedPaths...)
+	return resolved
 }
 
 // skipReason decides whether a check can meaningfully run in dir.
@@ -122,6 +170,9 @@ func (a *Analyzer) skipReason(dir string, check Check) (string, bool) {
 			return SkipReasonNoGoModule, true
 		}
 		return fmt.Sprintf(skipReasonMissingFilesFormat, strings.Join(check.RequiresFiles, " or ")), true
+	}
+	if check.ScopeToChangedPaths && len(a.changedPaths) == 0 {
+		return SkipReasonNoScannablePaths, true
 	}
 	if check.RequiresDirectory != "" && !directoryExists(dir, check.RequiresDirectory) {
 		return fmt.Sprintf("%s directory not found", check.RequiresDirectory), true

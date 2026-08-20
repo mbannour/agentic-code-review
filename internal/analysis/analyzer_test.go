@@ -80,6 +80,26 @@ func goRepo(t *testing.T) string {
 	return dir
 }
 
+// goToolChecks is the Go tool's own two checks.
+//
+// Tests about how a failing or timed-out check is reported use this rather than the
+// full default set, so adding a check to a toolchain cannot make them fail for a
+// reason unrelated to what they assert.
+func goToolChecks(t *testing.T) []Check {
+	t.Helper()
+
+	var checks []Check
+	for _, check := range DefaultChecks() {
+		if check.Command == "go" {
+			checks = append(checks, check)
+		}
+	}
+	if len(checks) != 2 {
+		t.Fatalf("expected the Go tool's two checks, got %d", len(checks))
+	}
+	return checks
+}
+
 // pass and fail build canned results.
 func pass(exitCode int) CheckResult   { return CheckResult{Passed: true, ExitCode: exitCode} }
 func fail(exitCode int) CheckResult   { return CheckResult{Passed: false, ExitCode: exitCode} }
@@ -140,7 +160,8 @@ func TestAnalyze(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			runner := newFakeRunner(tt.results)
 
-			result, err := NewAnalyzer(runner).Analyze(context.Background(), goRepo(t))
+			result, err := NewAnalyzerWithChecks(runner, goToolChecks(t)).
+				Analyze(context.Background(), goRepo(t))
 
 			// A failing check is evidence, never an application error.
 			if err != nil {
@@ -175,7 +196,8 @@ func TestAnalyzeRunsEveryCheckAfterAFailure(t *testing.T) {
 		"go-vet":  pass(0),
 	})
 
-	result, err := NewAnalyzer(runner).Analyze(context.Background(), goRepo(t))
+	result, err := NewAnalyzerWithChecks(runner, goToolChecks(t)).
+		Analyze(context.Background(), goRepo(t))
 	if err != nil {
 		t.Fatalf("Analyze() returned error: %v", err)
 	}
@@ -367,7 +389,8 @@ func TestAnalyzeWithoutGoModule(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			runner := newFakeRunner(nil)
 
-			result, err := NewAnalyzer(runner).Analyze(context.Background(), tt.setup(t))
+			result, err := NewAnalyzerWithChecks(runner, goToolChecks(t)).
+				Analyze(context.Background(), tt.setup(t))
 
 			// A non-Go repository is not an error.
 			if err != nil {
@@ -419,8 +442,9 @@ func TestAnalyzePassesRepoDirAndChecksToRunner(t *testing.T) {
 		t.Fatalf("Analyze() returned error: %v", err)
 	}
 
-	if len(runner.calls) != 2 {
-		t.Fatalf("made %d calls, want 2", len(runner.calls))
+	// go test, go vet, and the gosec scanner.
+	if len(runner.calls) != 3 {
+		t.Fatalf("made %d calls, want 3", len(runner.calls))
 	}
 
 	for _, call := range runner.calls {
@@ -763,14 +787,15 @@ func TestDefaultChecksAreImmutable(t *testing.T) {
 func TestDefaultChecks(t *testing.T) {
 	checks := DefaultChecks()
 
-	if len(checks) != 2 {
-		t.Fatalf("got %d default checks, want 2", len(checks))
+	// The Go tool's own checks, plus the Go security scanner.
+	want := []string{"go test ./...", "go vet ./...", "gosec -quiet ./..."}
+	if len(checks) != len(want) {
+		t.Fatalf("got %d default checks, want %d", len(checks), len(want))
 	}
-	if got := checks[0].DisplayCommand(); got != "go test ./..." {
-		t.Errorf("first check = %q, want %q", got, "go test ./...")
-	}
-	if got := checks[1].DisplayCommand(); got != "go vet ./..." {
-		t.Errorf("second check = %q, want %q", got, "go vet ./...")
+	for i, expected := range want {
+		if got := checks[i].DisplayCommand(); got != expected {
+			t.Errorf("check[%d] = %q, want %q", i, got, expected)
+		}
 	}
 	for _, c := range checks {
 		if len(c.RequiresFiles) == 0 || c.RequiresFiles[0] != "go.mod" {
