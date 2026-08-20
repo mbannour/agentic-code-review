@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "run_name": "illustrative-baseline",
+  "model": "fixture",
+  "prompt_version": "review-v1",
+  "cases": [
+    {
+      "id": "capture-under-review",
+      "findings": [
+        {
+          "id": "REQ-101",
+          "category": "requirement",
+          "file": "src/payments/api.py",
+          "start_line": 90,
+          "end_line": 94,
+          "title": "Capture bypasses manual review status"
+        }
+      ]
+    },
+    {
+      "id": "profile-authorization",
+      "findings": [
+        {
+          "id": "SEC-101",
+          "category": "security",
+          "file": "src/users/routes.py",
+          "start_line": 41,
+          "end_line": 45,
+          "title": "Missing authorization on profile update"
+        }
+      ]
+    },
+    {
+      "id": "swallowed-database-error",
+      "findings": []
+    },
+    {
+      "id": "documentation-only",
+      "findings": [
+        {
+          "id": "MNT-101",
+          "category": "maintainability",
+          "file": "README.md",
+          "start_line": 18,
+          "end_line": 18,
+          "title": "Heading could be shorter"
+        }
+      ]
+    },
+    {
+      "id": "safe-idempotency-change",
+      "findings": []
+    }
+  ]
+}

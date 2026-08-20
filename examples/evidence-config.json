@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "id": "customer-order-requirements",
+      "type": "file",
+      "kind": "requirement",
+      "required": true,
+      "path": "evidence/customer-requirements.example.md"
+    },
+    {
+      "id": "order-service-design",
+      "type": "confluence",
+      "kind": "architecture",
+      "required": false,
+      "page_id": "123456"
+    },
+    {
+      "id": "stage-database-schema",
+      "type": "postgres_schema",
+      "kind": "database_schema",
+      "required": false,
+      "schema": "public"
+    }
+  ]
+}

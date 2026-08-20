@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "name": "arc-seed-v1",
+  "cases": [
+    {
+      "id": "capture-under-review",
+      "description": "Capture must reject payments still under manual review.",
+      "source": "synthetic/payments-api/capture-under-review",
+      "findings": [
+        {
+          "id": "REQ-001",
+          "category": "requirement",
+          "file": "src/payments/api.py",
+          "start_line": 88,
+          "end_line": 94,
+          "title_contains": ["capture", "review"]
+        }
+      ]
+    },
+    {
+      "id": "profile-authorization",
+      "description": "A profile update endpoint must authorize access to the target user.",
+      "source": "synthetic/users-api/profile-authorization",
+      "findings": [
+        {
+          "id": "SEC-001",
+          "category": "security",
+          "file": "src/users/routes.py",
+          "start_line": 41,
+          "end_line": 48,
+          "title_contains": ["authorization"]
+        }
+      ]
+    },
+    {
+      "id": "swallowed-database-error",
+      "description": "The changed handler silently converts database failures into an empty success result.",
+      "source": "synthetic/reports-api/swallowed-database-error",
+      "findings": [
+        {
+          "id": "COR-001",
+          "category": "correctness",
+          "file": "src/reports/service.py",
+          "start_line": 112,
+          "end_line": 116,
+          "title_contains": ["error"]
+        }
+      ]
+    },
+    {
+      "id": "documentation-only",
+      "description": "A documentation-only change with no actionable defect.",
+      "source": "synthetic/docs/readme-only",
+      "findings": []
+    },
+    {
+      "id": "safe-idempotency-change",
+      "description": "A correct idempotency refactor with no actionable defect.",
+      "source": "synthetic/payments-api/safe-idempotency",
+      "findings": []
+    }
+  ]
+}
