@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/your-company/agentic-code-review/internal/analysis"
+	"github.com/your-company/agentic-code-review/internal/retrieval"
 	"github.com/your-company/agentic-code-review/internal/review"
 	"github.com/your-company/agentic-code-review/internal/technology"
 )
@@ -89,6 +90,25 @@ func (s *Selector) SelectWithTechnology(
 	analysisResult analysis.Result,
 	detected technology.Profile,
 ) (SelectedContext, error) {
+	return s.SelectWithRetrieval(ctx, reviewCtx, analysisResult, detected, retrieval.Result{
+		Skipped: true, Reason: "retrieval not requested",
+	})
+}
+
+// SelectWithRetrieval builds the selection including unchanged code retrieved from
+// the local checkout.
+//
+// Retrieved code is spent last, after the changed patches have taken what they
+// need. That ordering is the whole policy: context about a change is worth less
+// than the change, so a large diff quietly costs retrieval its budget rather than
+// costing the reviewer a patch.
+func (s *Selector) SelectWithRetrieval(
+	ctx context.Context,
+	reviewCtx review.Context,
+	analysisResult analysis.Result,
+	detected technology.Profile,
+	retrieved retrieval.Result,
+) (SelectedContext, error) {
 	if err := ctx.Err(); err != nil {
 		return SelectedContext{}, err
 	}
@@ -154,10 +174,71 @@ func (s *Selector) SelectWithTechnology(
 	stats.SelectedFiles = len(files)
 	stats.DroppedFiles = len(dropped)
 	stats.Dropped = dropped
-	stats.Truncated = anyTruncated(selected, dropped) || evidenceDropped > 0
+
+	// Retrieved code takes what the patches left, capped by its own allowance.
+	retrievalBudget := minInt(budget.Retrieval, remainingBudget(budget.Total, stats.SelectedBytes))
+	code, codeBytes, codeOriginal, codeDropped := selectCode(retrieved, retrievalBudget)
+	selected.Code = code
+
+	stats.CandidateCode = len(retrieved.Snippets)
+	stats.SelectedCode = len(code)
+	stats.DroppedCode = codeDropped
+	stats.RetrievalSkipped = retrievalSkipReason(retrieved)
+	stats.OriginalBytes += codeOriginal
+	stats.SelectedBytes += codeBytes
+
+	stats.Truncated = anyTruncated(selected, dropped) || evidenceDropped > 0 || codeDropped > 0
 
 	selected.Stats = stats
 	return selected, nil
+}
+
+// retrievalSkipReason explains an empty code section, so a reader can tell a
+// repository with nothing to retrieve from a stage that was never asked to run.
+func retrievalSkipReason(retrieved retrieval.Result) string {
+	if retrieved.Skipped {
+		return retrieved.Reason
+	}
+	return ""
+}
+
+// selectCode fits retrieved snippets into the remaining budget.
+//
+// Snippets arrive already ranked by the retriever — definitions before callers —
+// so the budget is spent in that order and the first snippet that does not fit
+// ends the section. A snippet is kept whole or not at all: half a function body
+// is not context, it is a misleading fragment.
+func selectCode(retrieved retrieval.Result, budget int) ([]SelectedCode, int, int, int) {
+	if retrieved.Skipped || len(retrieved.Snippets) == 0 || budget <= 0 {
+		original := 0
+		for _, snippet := range retrieved.Snippets {
+			original += snippet.Bytes()
+		}
+		return nil, 0, original, len(retrieved.Snippets)
+	}
+
+	var selected []SelectedCode
+	used, original, dropped := 0, 0, 0
+
+	for _, snippet := range retrieved.Snippets {
+		original += snippet.Bytes()
+		if used+snippet.Bytes() > budget {
+			dropped++
+			continue
+		}
+		used += snippet.Bytes()
+		selected = append(selected, SelectedCode{
+			Symbol:        snippet.Symbol,
+			Relation:      snippet.Relation,
+			Path:          snippet.Path,
+			StartLine:     snippet.StartLine,
+			EndLine:       snippet.EndLine,
+			Content:       snippet.Content,
+			OriginalBytes: snippet.Bytes(),
+			Truncated:     snippet.Truncated,
+		})
+	}
+	return selected, used, original, dropped
 }
 
 func remainingBudget(total, used int) int {

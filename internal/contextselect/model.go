@@ -8,7 +8,12 @@
 // data already gathered in review.Context and analysis.Result.
 package contextselect
 
-import "github.com/your-company/agentic-code-review/internal/evidence"
+import (
+	"strconv"
+
+	"github.com/your-company/agentic-code-review/internal/evidence"
+	"github.com/your-company/agentic-code-review/internal/retrieval"
+)
 
 // FileKind is the deterministic classification of a changed file.
 type FileKind string
@@ -58,6 +63,10 @@ type SelectedContext struct {
 	Rules    []SelectedRule
 	Evidence []SelectedEvidence
 	Analysis []SelectedAnalysis
+
+	// Code is unchanged repository code retrieved as context. It is never part of
+	// the change under review, and a finding may never be attributed to it.
+	Code []SelectedCode
 
 	Profile TechnologyProfile
 	Stats   SelectionStats
@@ -147,6 +156,31 @@ type SelectedEvidence struct {
 	Truncated     bool
 }
 
+// SelectedCode is one bounded region of unchanged code kept for context.
+//
+// It carries the symbol and relation that justified retrieving it, so a later
+// stage can say why the reviewer was shown this and a reader can disagree.
+type SelectedCode struct {
+	Symbol   string
+	Relation retrieval.Relation
+
+	Path      string
+	StartLine int
+	EndLine   int
+	Content   string
+
+	OriginalBytes int
+	Truncated     bool
+}
+
+// Location renders the region's position as "path:start-end".
+func (c SelectedCode) Location() string {
+	if c.EndLine <= c.StartLine {
+		return c.Path + ":" + strconv.Itoa(c.StartLine)
+	}
+	return c.Path + ":" + strconv.Itoa(c.StartLine) + "-" + strconv.Itoa(c.EndLine)
+}
+
 // SelectedAnalysis is the evidence from one deterministic check. Output is empty
 // for a passing check — that it passed is the whole message — and holds a bounded
 // snippet for a failing one.
@@ -219,6 +253,14 @@ type SelectionStats struct {
 	CandidateEvidence int
 	SelectedEvidence  int
 	DroppedEvidence   int
+
+	// Retrieval describes the unchanged-code section. RetrievalSkipped carries the
+	// reason retrieval produced nothing, so an empty section is explained rather
+	// than looking like a failure.
+	CandidateCode    int
+	SelectedCode     int
+	DroppedCode      int
+	RetrievalSkipped string
 
 	// OriginalBytes is the total size of everything offered to the selector:
 	// every candidate patch, rule document, external evidence document, analysis

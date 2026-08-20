@@ -6,6 +6,7 @@ import (
 
 	"github.com/your-company/agentic-code-review/internal/contextselect"
 	"github.com/your-company/agentic-code-review/internal/findings"
+	"github.com/your-company/agentic-code-review/internal/retrieval"
 )
 
 // Markers delimiting untrusted repository-provided content. Everything inside is
@@ -46,6 +47,7 @@ func (b InputBuilder) Build(selected contextselect.SelectedContext) (ReviewInput
 	writeCriteria(&out, selected)
 	writeAnalysis(&out, selected)
 	writeChangedFiles(&out, selected)
+	writeRelatedCode(&out, selected)
 	writeResponseContract(&out)
 
 	content := out.String()
@@ -251,6 +253,58 @@ func writeExternalEvidence(out *strings.Builder, selected contextselect.Selected
 			fmt.Fprintf(out, "note: evidence %s was truncated to fit a content budget\n", document.ID)
 		}
 		out.WriteString("\n")
+	}
+}
+
+// writeRelatedCode writes unchanged repository code retrieved as context.
+//
+// It comes after the changed files deliberately: the diff is the subject, and this
+// section is background for reading it. The rule stated here is the same one the
+// domain model enforces — a finding must name a changed file — so the section
+// cannot become a licence to review the rest of the repository. It is also stated
+// as a lexical, best-effort match, because a snippet that turns out to be a
+// same-named symbol from another package is a reason for the reviewer to say so
+// rather than to reason from it.
+func writeRelatedCode(out *strings.Builder, selected contextselect.SelectedContext) {
+	out.WriteString("RELATED UNCHANGED CODE\n")
+
+	if len(selected.Code) == 0 {
+		reason := selected.Stats.RetrievalSkipped
+		if reason == "" {
+			reason = "none retrieved"
+		}
+		fmt.Fprintf(out, "not available: %s\n\n", reason)
+		return
+	}
+
+	out.WriteString("This code is NOT part of the change. It was located by matching identifiers\n")
+	out.WriteString("on the changed lines against definitions and uses elsewhere in the repository.\n")
+	out.WriteString("The match is lexical: a snippet may be a same-named symbol from elsewhere.\n")
+	out.WriteString("Use it to judge the change; you may cite it as code evidence, but every\n")
+	out.WriteString("finding must still name a file this pull request changed.\n\n")
+
+	for _, region := range selected.Code {
+		fmt.Fprintf(out, "symbol: %s\n", region.Symbol)
+		fmt.Fprintf(out, "relation: %s\n", relationDescription(region.Relation))
+		fmt.Fprintf(out, "location: %s\n", region.Location())
+		writeDataBlock(out, "unchanged code: "+region.Location(), region.Content)
+		if region.Truncated {
+			out.WriteString("note: this region was truncated to fit a content budget\n")
+		}
+		out.WriteString("\n")
+	}
+}
+
+// relationDescription states what a retrieved region is, in the terms a reviewer
+// needs: what the change calls, or who calls the change.
+func relationDescription(relation retrieval.Relation) string {
+	switch relation {
+	case retrieval.RelationDefinition:
+		return "definition of a symbol the changed lines use"
+	case retrieval.RelationCaller:
+		return "unchanged use of a symbol this change defines"
+	default:
+		return string(relation)
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 	"github.com/your-company/agentic-code-review/internal/jira"
 	"github.com/your-company/agentic-code-review/internal/publish"
 	"github.com/your-company/agentic-code-review/internal/reporules"
+	"github.com/your-company/agentic-code-review/internal/retrieval"
 	"github.com/your-company/agentic-code-review/internal/review"
 	"github.com/your-company/agentic-code-review/internal/technology"
 	"github.com/your-company/agentic-code-review/internal/verification"
@@ -77,6 +78,12 @@ func runReview(args []string) error {
 		"versioned JSON configuration for read-only external evidence connectors",
 	)
 
+	retrieve := fs.Bool(
+		"retrieve",
+		false,
+		"retrieve unchanged repository code related to the change (requires --repo-dir)",
+	)
+
 	capturePredictions := fs.String(
 		"capture-predictions",
 		"",
@@ -129,6 +136,13 @@ func runReview(args []string) error {
 	}
 	if *capturePredictions != "" && strings.TrimSpace(*captureRun) == "" {
 		return errors.New("--capture-run is required with --capture-predictions")
+	}
+
+	// Retrieval reads the local checkout, so it cannot run without one. Saying so
+	// up front is better than a silent skip the operator only notices in the
+	// output of a run they were measuring.
+	if *retrieve && *repoDir == "" {
+		return errors.New("--retrieve requires --repo-dir")
 	}
 
 	if *prURL == "" {
@@ -255,8 +269,24 @@ func runReview(args []string) error {
 		printAnalysis(analysisResult)
 	}
 
+	// A diff says what changed. What the changed code calls, and who called what
+	// it changed, are in files the pull request never touched — so retrieval reads
+	// the checkout for exactly those regions. It is opt-in because it is the one
+	// stage whose value is still being measured.
+	var retrieved retrieval.Result
+	if *retrieve {
+		retrieved, err = retrieval.NewRetriever().Retrieve(ctx, *repoDir, retrievalChanges(files))
+		if err != nil {
+			return fmt.Errorf("code retrieval: %w", err)
+		}
+		printRetrieval(retrieved)
+	} else {
+		retrieved = retrieval.Result{Skipped: true, Reason: "--retrieve not provided"}
+	}
+
 	// Reduce the search space before any later stage sees it.
-	selected, err := contextselect.NewSelector().SelectWithTechnology(ctx, reviewCtx, analysisResult, profile)
+	selected, err := contextselect.NewSelector().
+		SelectWithRetrieval(ctx, reviewCtx, analysisResult, profile, retrieved)
 	if err != nil {
 		return fmt.Errorf("context selection: %w", err)
 	}
@@ -723,6 +753,13 @@ func printSelection(selected contextselect.SelectedContext) {
 		}
 		fmt.Println()
 	}
+	if stats.CandidateCode > 0 {
+		fmt.Printf("Related code:    %d of %d regions selected", stats.SelectedCode, stats.CandidateCode)
+		if stats.DroppedCode > 0 {
+			fmt.Printf(" (%d dropped: the changed patches had priority)", stats.DroppedCode)
+		}
+		fmt.Println()
+	}
 
 	fmt.Println()
 	fmt.Println("Context size:")
@@ -897,6 +934,47 @@ func formatBytes(n int) string {
 }
 
 // printAnalysisSkipped reports that no checks were run at all.
+// retrievalChanges narrows the changed files to what retrieval needs: a path and
+// the patch whose changed lines name the symbols worth resolving.
+func retrievalChanges(files []github.ChangedFile) []retrieval.Change {
+	changes := make([]retrieval.Change, 0, len(files))
+	for _, file := range files {
+		changes = append(changes, retrieval.Change{Path: file.Filename, Patch: file.Patch})
+	}
+	return changes
+}
+
+// printRetrieval reports what retrieval found, or why it found nothing. An empty
+// section with no reason is indistinguishable from a broken stage.
+func printRetrieval(result retrieval.Result) {
+	fmt.Println()
+	fmt.Println("Code Retrieval")
+	fmt.Println()
+
+	if result.Skipped {
+		fmt.Printf("  skipped: %s\n", result.Reason)
+		return
+	}
+
+	stats := result.Stats
+	fmt.Printf("Files indexed:    %d", stats.FilesIndexed)
+	if stats.FilesSkipped > 0 {
+		fmt.Printf(" (%d skipped)", stats.FilesSkipped)
+	}
+	fmt.Println()
+	fmt.Printf("Definitions:      %d\n", stats.Definitions)
+	fmt.Printf("Changed symbols:  %d of %d resolved\n", stats.ResolvedSymbols, stats.TouchedSymbols)
+	fmt.Printf("Retrieved:        %d regions, %s\n", len(result.Snippets), formatBytes(stats.Bytes))
+
+	if len(result.Snippets) == 0 {
+		return
+	}
+	fmt.Println()
+	for _, snippet := range result.Snippets {
+		fmt.Printf("  %-4s %-24s %s\n", snippet.Relation.Display(), snippet.Symbol, snippet.Location())
+	}
+}
+
 func printAnalysisSkipped(reason string) {
 	fmt.Println()
 	fmt.Println("Deterministic Analysis")
@@ -1165,6 +1243,7 @@ Options:
   --format     markdown | json
   --repo-dir   local checkout to run deterministic checks against (optional)
   --evidence-config versioned connector configuration for external review evidence (optional)
+  --retrieve   retrieve unchanged code related to the change (requires --repo-dir)
   --capture-predictions  write this run's validated findings to a new snapshot (optional)
   --capture-run          run name recorded in the snapshot (required with capture)
   --capture-case         evaluation case ID (default: owner/repo#number)

@@ -14,6 +14,11 @@ const (
 	DefaultEvidenceBudgetBytes = 40 * 1024
 	DefaultAnalysisBudgetBytes = 30 * 1024
 
+	// DefaultRetrievalBudgetBytes caps the unchanged code retrieved for context.
+	// It is spent only after the changed patches have taken what they need:
+	// context about the change must never crowd out the change itself.
+	DefaultRetrievalBudgetBytes = 32 * 1024
+
 	// DefaultTicketBudgetBytes caps the Jira description. The key and summary are
 	// never subject to it.
 	DefaultTicketBudgetBytes = 16 * 1024
@@ -33,6 +38,7 @@ const (
 	MarkerRule              = "[TRUNCATED: rule document exceeded context budget]"
 	MarkerEvidence          = "[TRUNCATED: external evidence exceeded context budget]"
 	MarkerAnalysis          = "[TRUNCATED: check output exceeded context budget]"
+	MarkerRetrieval         = "[TRUNCATED: retrieved code exceeded context budget]"
 	MarkerTicketDescription = "[TRUNCATED: Jira description exceeded context limit]"
 )
 
@@ -50,6 +56,9 @@ type Budget struct {
 	// Evidence caps the combined external evidence documents.
 	Evidence int
 
+	// Retrieval caps the combined unchanged-code snippets.
+	Retrieval int
+
 	// TicketDescription caps the Jira description.
 	TicketDescription int
 
@@ -63,6 +72,7 @@ func DefaultBudget() Budget {
 		Total:             DefaultContextBudgetBytes,
 		Rules:             DefaultRulesBudgetBytes,
 		Evidence:          DefaultEvidenceBudgetBytes,
+		Retrieval:         DefaultRetrievalBudgetBytes,
 		Analysis:          DefaultAnalysisBudgetBytes,
 		TicketDescription: DefaultTicketBudgetBytes,
 		PerCheckOutput:    DefaultPerCheckOutputBytes,
@@ -86,6 +96,9 @@ func (b Budget) normalized() Budget {
 	if b.Evidence <= 0 {
 		b.Evidence = defaults.Evidence
 	}
+	if b.Retrieval <= 0 {
+		b.Retrieval = defaults.Retrieval
+	}
 	if b.TicketDescription <= 0 {
 		b.TicketDescription = defaults.TicketDescription
 	}
@@ -102,6 +115,9 @@ func (b Budget) normalized() Budget {
 	}
 	if b.Evidence > b.Total {
 		b.Evidence = b.Total
+	}
+	if b.Retrieval > b.Total {
+		b.Retrieval = b.Total
 	}
 	if b.TicketDescription > b.Total {
 		b.TicketDescription = b.Total

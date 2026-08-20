@@ -20,6 +20,7 @@ import (
 	"github.com/your-company/agentic-code-review/internal/github"
 	"github.com/your-company/agentic-code-review/internal/jira"
 	"github.com/your-company/agentic-code-review/internal/reporules"
+	"github.com/your-company/agentic-code-review/internal/retrieval"
 	"github.com/your-company/agentic-code-review/internal/review"
 )
 
@@ -1112,5 +1113,66 @@ func TestCaptureIsOptIn(t *testing.T) {
 	}
 	if *path != "" {
 		t.Error("--capture-predictions has a default path; capture must be opt-in")
+	}
+}
+
+// TestRetrieveRequiresARepositoryDirectory checks the refusal happens before any
+// network call. Retrieval reads the local checkout, and a silent skip is worse
+// than an error when the run was meant to measure retrieval's effect.
+func TestRetrieveRequiresARepositoryDirectory(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+
+	err := Run([]string{"review", "--pr", testPR, "--retrieve"})
+	if err == nil || !strings.Contains(err.Error(), "--retrieve requires --repo-dir") {
+		t.Fatalf("Run() = %v, want the retrieve/--repo-dir refusal", err)
+	}
+}
+
+// Retrieval is opt-in, so a baseline run and a retrieval run differ only in the
+// flag — which is what makes the two comparable.
+func TestRetrievalIsOptIn(t *testing.T) {
+	fs := flag.NewFlagSet("review", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.String("pr", "", "")
+	retrieve := fs.Bool("retrieve", false, "")
+
+	if err := fs.Parse([]string{"--pr", testPR}); err != nil {
+		t.Fatalf("Parse() returned error: %v", err)
+	}
+	if *retrieve {
+		t.Error("--retrieve defaults to true; retrieval must be opt-in")
+	}
+}
+
+func TestPrintRetrievalStatesTheSkipReason(t *testing.T) {
+	output := captureStdout(t, func() {
+		printRetrieval(retrieval.Result{Skipped: true, Reason: "no indexable source files found in the checkout"})
+	})
+
+	if !strings.Contains(output, "skipped: no indexable source files") {
+		t.Errorf("output does not explain the skip:\n%s", output)
+	}
+}
+
+func TestPrintRetrievalListsRegions(t *testing.T) {
+	output := captureStdout(t, func() {
+		printRetrieval(retrieval.Result{
+			Symbols: []string{"RetryPayment"},
+			Snippets: []retrieval.Snippet{{
+				Symbol: "RetryPayment", Relation: retrieval.RelationDefinition,
+				Path: "internal/payment/retry.go", StartLine: 84, EndLine: 97,
+				Content: "func RetryPayment() error {\n\treturn nil\n}",
+			}},
+			Stats: retrieval.Stats{
+				FilesIndexed: 120, Definitions: 900,
+				TouchedSymbols: 10, ResolvedSymbols: 1, Bytes: 42,
+			},
+		})
+	})
+
+	for _, want := range []string{"DEF", "RetryPayment", "internal/payment/retry.go:84-97", "1 of 10 resolved"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("output missing %q:\n%s", want, output)
+		}
 	}
 }
