@@ -13,7 +13,7 @@ import (
 func runEvaluate(args []string) error {
 	fs := flag.NewFlagSet("evaluate", flag.ContinueOnError)
 	labelsPath := fs.String("labels", "", "human-labelled ground truth JSON")
-	predictionsPath := fs.String("predictions", "", "captured reviewer predictions JSON")
+	predictionsPath := fs.String("predictions", "", "captured reviewer predictions JSON file, or a directory of snapshots")
 	format := fs.String("format", "markdown", "output format: markdown or json")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -39,13 +39,9 @@ func runEvaluate(args []string) error {
 		return err
 	}
 
-	predictionsFile, err := os.Open(*predictionsPath)
-	if err != nil {
-		return fmt.Errorf("open predictions: %w", err)
-	}
-	defer predictionsFile.Close()
-
-	predictions, err := evaluation.DecodePredictions(predictionsFile)
+	// A file is one captured run; a directory is a suite of per-pull-request
+	// captures from the same run, merged deterministically.
+	predictions, err := evaluation.LoadPredictions(*predictionsPath)
 	if err != nil {
 		return err
 	}

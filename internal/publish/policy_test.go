@@ -52,15 +52,15 @@ func TestDispositionBySeverityAndVerdict(t *testing.T) {
 			want: DispositionInline, wantReason: ReasonVerifiedValid,
 		},
 		{
-			// The medium gates are 0.85, so what passes for a high finding fails here.
+			// Medium-severity claims require HIGH evidence, so MEDIUM evidence fails here.
 			name: "medium, valid, reviewer below the medium bar", severity: findings.SeverityMedium,
 			reviewer: 0.84, verdict: verification.VerdictValid, verifier: 0.95,
-			want: DispositionSuppress, wantReason: ReasonLowConfidence,
+			want: DispositionSuppress, wantReason: ReasonLowEvidenceStrength,
 		},
 		{
 			name: "medium, valid, verifier below the medium bar", severity: findings.SeverityMedium,
 			reviewer: 0.95, verdict: verification.VerdictValid, verifier: 0.84,
-			want: DispositionSuppress, wantReason: ReasonLowVerifierConfidence,
+			want: DispositionSuppress, wantReason: ReasonLowVerifierEvidenceStrength,
 		},
 		{
 			name: "high, invalid", severity: findings.SeverityHigh,
@@ -75,12 +75,12 @@ func TestDispositionBySeverityAndVerdict(t *testing.T) {
 		{
 			name: "high, reviewer below its own bar", severity: findings.SeverityHigh,
 			reviewer: 0.79, verdict: verification.VerdictValid, verifier: 0.99,
-			want: DispositionSuppress, wantReason: ReasonLowConfidence,
+			want: DispositionSuppress, wantReason: ReasonLowEvidenceStrength,
 		},
 		{
 			name: "high, verifier below its own bar", severity: findings.SeverityHigh,
 			reviewer: 0.99, verdict: verification.VerdictValid, verifier: 0.79,
-			want: DispositionSuppress, wantReason: ReasonLowVerifierConfidence,
+			want: DispositionSuppress, wantReason: ReasonLowVerifierEvidenceStrength,
 		},
 		{
 			name: "blocker, exactly at both thresholds", severity: findings.SeverityBlocker,
@@ -88,8 +88,8 @@ func TestDispositionBySeverityAndVerdict(t *testing.T) {
 			want: DispositionInline, wantReason: ReasonVerifiedValid,
 		},
 		{
-			name: "medium, exactly at both thresholds", severity: findings.SeverityMedium,
-			reviewer: 0.85, verdict: verification.VerdictValid, verifier: 0.85,
+			name: "medium, exactly at the high band", severity: findings.SeverityMedium,
+			reviewer: 0.90, verdict: verification.VerdictValid, verifier: 0.90,
 			want: DispositionInline, wantReason: ReasonVerifiedValid,
 		},
 	}
@@ -121,8 +121,8 @@ func TestLowSeverityIsNeverInline(t *testing.T) {
 	}{
 		{name: "the observed MAINT-001", confidence: 0.82, want: DispositionSummary, wantReason: ReasonLowSeverity},
 		{name: "exactly at the bar", confidence: 0.80, want: DispositionSummary, wantReason: ReasonLowSeverity},
-		{name: "just below the bar", confidence: 0.79, want: DispositionSuppress, wantReason: ReasonLowConfidence},
-		{name: "barely confident at all", confidence: 0.20, want: DispositionSuppress, wantReason: ReasonLowConfidence},
+		{name: "just below the bar", confidence: 0.79, want: DispositionSuppress, wantReason: ReasonLowEvidenceStrength},
+		{name: "barely supported", confidence: 0.20, want: DispositionSuppress, wantReason: ReasonLowEvidenceStrength},
 		{name: "completely certain", confidence: 1.0, want: DispositionSummary, wantReason: ReasonLowSeverity},
 	}
 
@@ -227,7 +227,7 @@ func TestConfidencesAreGatedIndependently(t *testing.T) {
 		t.Fatalf("disposition = %s, want suppress; the average of 0.98 and 0.71 must not publish",
 			decision.Disposition)
 	}
-	if !decision.Reasons.Has(ReasonLowVerifierConfidence) {
+	if !decision.Reasons.Has(ReasonLowVerifierEvidenceStrength) {
 		t.Errorf("reasons = %s, want the verifier gate named", decision.Reasons)
 	}
 }
@@ -661,7 +661,7 @@ func TestOrdering(t *testing.T) {
 			want: []string{"SEC-1", "COR-1", "TEST-1", "MAINT-1"},
 		},
 		{
-			name: "reviewer confidence descending",
+			name: "reviewer evidence strength descending",
 			input: []Candidate{
 				candidate("C-LOW", findings.CategoryCorrectness, findings.SeverityHigh, 0.81, 0.95, 81),
 				candidate("C-HIGH", findings.CategoryCorrectness, findings.SeverityHigh, 0.99, 0.95, 82),
@@ -670,12 +670,20 @@ func TestOrdering(t *testing.T) {
 			want: []string{"C-HIGH", "C-MID", "C-LOW"},
 		},
 		{
-			name: "verifier confidence descending breaks a reviewer tie",
+			name: "verifier evidence strength descending breaks a reviewer tie",
 			input: []Candidate{
 				candidate("V-LOW", findings.CategoryCorrectness, findings.SeverityHigh, 0.90, 0.81, 81),
 				candidate("V-HIGH", findings.CategoryCorrectness, findings.SeverityHigh, 0.90, 0.99, 82),
 			},
 			want: []string{"V-HIGH", "V-LOW"},
+		},
+		{
+			name: "raw decimals inside one band do not affect ordering",
+			input: []Candidate{
+				candidate("RAW-HIGHER", findings.CategoryCorrectness, findings.SeverityHigh, 0.99, 0.99, 82),
+				candidate("RAW-LOWER", findings.CategoryCorrectness, findings.SeverityHigh, 0.91, 0.91, 81),
+			},
+			want: []string{"RAW-LOWER", "RAW-HIGHER"},
 		},
 		{
 			name: "file, then line, then id",
@@ -828,8 +836,8 @@ func TestExplainNamesTheInputsAndTheOutcome(t *testing.T) {
 	explanation := decision.Explain()
 	for _, want := range []string{
 		"severity:       HIGH",
-		"reviewer:       94%",
-		"verifier:       VALID / 97%",
+		"reviewer:       HIGH evidence",
+		"verifier:       VALID / HIGH evidence",
 		"location:       valid",
 		"decision:       INLINE",
 	} {
@@ -861,7 +869,7 @@ func TestPolicyIsCodeOwned(t *testing.T) {
 		t.Errorf("disposition = %s, want suppress; finding text must not influence policy",
 			decision.Disposition)
 	}
-	if !decision.Reasons.Has(ReasonLowConfidence) {
+	if !decision.Reasons.Has(ReasonLowEvidenceStrength) {
 		t.Errorf("reasons = %s, want the confidence gate applied normally", decision.Reasons)
 	}
 }

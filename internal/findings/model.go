@@ -93,6 +93,64 @@ func (s Severity) Rank() int {
 // Display renders the severity for terminal output.
 func (s Severity) Display() string { return strings.ToUpper(string(s)) }
 
+// EvidenceStrength is the coarse, ordinal interpretation of a model's raw confidence
+// score. The score is not a calibrated probability, so ARC never presents it as one and
+// never distinguishes between two scores in the same band.
+type EvidenceStrength string
+
+const (
+	EvidenceStrengthLow    EvidenceStrength = "low"
+	EvidenceStrengthMedium EvidenceStrength = "medium"
+	EvidenceStrengthHigh   EvidenceStrength = "high"
+)
+
+// EvidenceStrengths lists every allowed strength, weakest first.
+func EvidenceStrengths() []EvidenceStrength {
+	return []EvidenceStrength{EvidenceStrengthLow, EvidenceStrengthMedium, EvidenceStrengthHigh}
+}
+
+// Valid reports whether s is an allowed evidence strength.
+func (s EvidenceStrength) Valid() bool {
+	for _, allowed := range EvidenceStrengths() {
+		if s == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+// Rank orders evidence strengths, higher being stronger. An unknown value ranks below
+// LOW; configuration validation rejects it before policy uses it.
+func (s EvidenceStrength) Rank() int {
+	for i, allowed := range EvidenceStrengths() {
+		if s == allowed {
+			return i
+		}
+	}
+	return -1
+}
+
+// AtLeast reports whether s meets a minimum ordinal strength.
+func (s EvidenceStrength) AtLeast(minimum EvidenceStrength) bool {
+	return s.Valid() && minimum.Valid() && s.Rank() >= minimum.Rank()
+}
+
+// Display renders an evidence strength for terminal and GitHub output.
+func (s EvidenceStrength) Display() string { return strings.ToUpper(string(s)) }
+
+// EvidenceStrengthFromScore maps the model's raw, uncalibrated ordinal input to the only
+// three distinctions ARC uses. Values are validated as 0..1 before reaching policy.
+func EvidenceStrengthFromScore(score float64) EvidenceStrength {
+	switch {
+	case score >= 0.90:
+		return EvidenceStrengthHigh
+	case score >= 0.80:
+		return EvidenceStrengthMedium
+	default:
+		return EvidenceStrengthLow
+	}
+}
+
 // EvidenceType is the closed set of things that can substantiate a finding.
 type EvidenceType string
 
@@ -144,10 +202,13 @@ type Evidence struct {
 // It is explanatory only. Suggestion describes the smallest reasonable
 // remediation in prose; it is never a patch, a replacement body, or a command.
 type Finding struct {
-	ID         string   `json:"id"`
-	Category   Category `json:"category"`
-	Severity   Severity `json:"severity"`
-	Confidence float64  `json:"confidence"`
+	ID       string   `json:"id"`
+	Category Category `json:"category"`
+	Severity Severity `json:"severity"`
+	// Confidence is retained as the model response's raw ordinal input for schema
+	// compatibility and audit. It is not a probability; policy and output use only
+	// EvidenceStrength().
+	Confidence float64 `json:"confidence"`
 
 	File      string `json:"file"`
 	StartLine int    `json:"start_line"`
@@ -170,8 +231,10 @@ func (f Finding) Location() string {
 	return fmt.Sprintf("%s:%d-%d", f.File, f.StartLine, f.EndLine)
 }
 
-// ConfidencePercent renders confidence as whole percentage points.
-func (f Finding) ConfidencePercent() int { return int(f.Confidence*100 + 0.5) }
+// EvidenceStrength returns the coarse evidence band used by policy and output.
+func (f Finding) EvidenceStrength() EvidenceStrength {
+	return EvidenceStrengthFromScore(f.Confidence)
+}
 
 // ReviewResult is the complete outcome of one review. A result with no findings is
 // valid and expected: reporting nothing is better than inventing a problem.

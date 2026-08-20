@@ -33,13 +33,13 @@ const (
 	// the case for low-severity findings.
 	ReasonVerificationNotRequired ReasonCode = "verification_not_required"
 
-	// ReasonLowConfidence means the reviewer's own confidence is below the gate.
-	ReasonLowConfidence ReasonCode = "low_confidence"
+	// ReasonLowEvidenceStrength means the reviewer's evidence band is below the gate.
+	ReasonLowEvidenceStrength ReasonCode = "low_evidence_strength"
 
-	// ReasonLowVerifierConfidence means the verifier's confidence in its verdict is below
-	// the gate. It is a separate code from ReasonLowConfidence because the two numbers
+	// ReasonLowVerifierEvidenceStrength means the verifier's evidence band is below the
+	// gate. It is separate from ReasonLowEvidenceStrength because the two assessments
 	// measure different things.
-	ReasonLowVerifierConfidence ReasonCode = "low_verifier_confidence"
+	ReasonLowVerifierEvidenceStrength ReasonCode = "low_verifier_evidence_strength"
 
 	// ReasonLowSeverity means the finding is low severity, which is never inline.
 	ReasonLowSeverity ReasonCode = "low_severity"

@@ -79,10 +79,12 @@ uncertain
 Prefer uncertain over pretending certainty. An unsupported "valid" is worse than an
 honest "uncertain": it is what puts a wrong comment on someone's pull request.
 
-CONFIDENCE
-Report your confidence in the verdict, from 0.0 to 1.0.
-It is confidence in your own conclusion, not in the finding, and not a restatement of the
-reviewer's confidence.
+EVIDENCE STRENGTH
+The JSON schema retains a number from 0.0 to 1.0 as an internal ordinal input. It is not a
+probability or measured likelihood. Use it only to select a band: below 0.80 = LOW, 0.80
+through below 0.90 = MEDIUM, and 0.90 through 1.0 = HIGH. Values within one band are
+equivalent to ARC policy. Assess the evidence for your own verdict, independently of the
+reviewer's band.
 
 DETERMINISTIC EVIDENCE
 Check results below were produced by trusted local tooling.
@@ -149,7 +151,7 @@ func writeCandidateFinding(out *strings.Builder, finding findings.Finding) {
 	fmt.Fprintf(out, "id: %s\n", finding.ID)
 	fmt.Fprintf(out, "category: %s\n", finding.Category)
 	fmt.Fprintf(out, "claimed severity: %s\n", finding.Severity)
-	fmt.Fprintf(out, "reviewer confidence: %.2f\n", finding.Confidence)
+	fmt.Fprintf(out, "reviewer evidence strength: %s\n", finding.EvidenceStrength().Display())
 	fmt.Fprintf(out, "file: %s\n", finding.File)
 	fmt.Fprintf(out, "lines: %d-%d\n", finding.StartLine, finding.EndLine)
 
@@ -303,7 +305,9 @@ Rules:
 - Use only these fields. Any other field invalidates the response.
 - finding_id must be exactly %q.
 - verdict is one of: %s
-- confidence is a number from 0.0 to 1.0, and measures your confidence in the verdict
+- confidence is an internal ordinal input, not a probability: below 0.80 = LOW,
+  0.80 through below 0.90 = MEDIUM, and 0.90 through 1.0 = HIGH. Values inside one
+  band are equivalent to ARC policy
 - reason is required, and must state what you actually checked
 - evidence type is one of: %s
 - put what supports the finding in supporting_evidence, and what contradicts it in

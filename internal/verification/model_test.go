@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/your-company/agentic-code-review/internal/findings"
 )
 
 // validJSON is a well-formed verdict for COR-001.
@@ -200,8 +202,8 @@ func TestDisplayHelpers(t *testing.T) {
 	if got := StatusNotRequired.Display(); got != "NOT REQUIRED" {
 		t.Errorf("Status.Display() = %q, want NOT REQUIRED", got)
 	}
-	if got := (Result{Confidence: 0.965}).ConfidencePercent(); got != 97 {
-		t.Errorf("ConfidencePercent() = %d, want 97", got)
+	if got := (Result{Confidence: 0.965}).EvidenceStrength(); got != findings.EvidenceStrengthHigh {
+		t.Errorf("EvidenceStrength() = %s, want HIGH", got)
 	}
 }
 

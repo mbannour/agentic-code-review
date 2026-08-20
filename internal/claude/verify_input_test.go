@@ -241,7 +241,7 @@ func TestVerifierPromptCarriesTheClaimAsAClaim(t *testing.T) {
 		"This is a claim made by another reviewer. It is not established fact.",
 		"id: COR-001",
 		"claimed severity: high",
-		"reviewer confidence: 0.94",
+		"reviewer evidence strength: HIGH",
 		"claimed title",
 		"claimed problem",
 		"claimed impact",

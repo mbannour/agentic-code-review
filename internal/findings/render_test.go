@@ -24,7 +24,7 @@ func TestRenderFinding(t *testing.T) {
 		"- JIRA: PAY-431",
 		"Suggestion",
 		"Return before entering RetryPayment when the decline is permanent.",
-		"Confidence: 96%",
+		"Evidence strength: HIGH",
 	}
 
 	for _, w := range want {
@@ -36,7 +36,7 @@ func TestRenderFinding(t *testing.T) {
 	// The sections appear in a fixed order.
 	order := []string{"HIGH · COR-001", "internal/payment/retry.go:84-87",
 		"Permanent declines enter the retry path", "Problem", "Impact", "Evidence",
-		"Suggestion", "Confidence: 96%"}
+		"Suggestion", "Evidence strength: HIGH"}
 	last := -1
 	for _, section := range order {
 		idx := strings.Index(got, section)
@@ -57,7 +57,7 @@ func TestRenderZeroFindings(t *testing.T) {
 	if !strings.Contains(got, NoFindingsMessage) {
 		t.Errorf("report missing %q; got:\n%s", NoFindingsMessage, got)
 	}
-	for _, notWant := range []string{"Problem", "Evidence", "Confidence:", "1 actionable finding"} {
+	for _, notWant := range []string{"Problem", "Evidence strength:", "1 actionable finding"} {
 		if strings.Contains(got, notWant) {
 			t.Errorf("empty report unexpectedly contains %q; got:\n%s", notWant, got)
 		}
@@ -152,30 +152,30 @@ func TestRenderIsDeterministic(t *testing.T) {
 	}
 }
 
-func TestFindingLocationAndConfidence(t *testing.T) {
+func TestFindingLocationAndEvidenceStrength(t *testing.T) {
 	tests := []struct {
-		name           string
-		finding        Finding
-		wantLocation   string
-		wantConfidence int
+		name         string
+		finding      Finding
+		wantLocation string
+		wantStrength EvidenceStrength
 	}{
 		{
-			name:           "line range",
-			finding:        Finding{File: "a.go", StartLine: 84, EndLine: 87, Confidence: 0.96},
-			wantLocation:   "a.go:84-87",
-			wantConfidence: 96,
+			name:         "line range",
+			finding:      Finding{File: "a.go", StartLine: 84, EndLine: 87, Confidence: 0.96},
+			wantLocation: "a.go:84-87",
+			wantStrength: EvidenceStrengthHigh,
 		},
 		{
-			name:           "single line",
-			finding:        Finding{File: "a.go", StartLine: 12, EndLine: 12, Confidence: 0.815},
-			wantLocation:   "a.go:12",
-			wantConfidence: 82,
+			name:         "single line",
+			finding:      Finding{File: "a.go", StartLine: 12, EndLine: 12, Confidence: 0.815},
+			wantLocation: "a.go:12",
+			wantStrength: EvidenceStrengthMedium,
 		},
 		{
-			name:           "certain",
-			finding:        Finding{File: "a.go", StartLine: 1, EndLine: 1, Confidence: 1},
-			wantLocation:   "a.go:1",
-			wantConfidence: 100,
+			name:         "certain",
+			finding:      Finding{File: "a.go", StartLine: 1, EndLine: 1, Confidence: 1},
+			wantLocation: "a.go:1",
+			wantStrength: EvidenceStrengthHigh,
 		},
 	}
 
@@ -185,10 +185,30 @@ func TestFindingLocationAndConfidence(t *testing.T) {
 			if got := tt.finding.Location(); got != tt.wantLocation {
 				t.Errorf("Location() = %q, want %q", got, tt.wantLocation)
 			}
-			if got := tt.finding.ConfidencePercent(); got != tt.wantConfidence {
-				t.Errorf("ConfidencePercent() = %d, want %d", got, tt.wantConfidence)
+			if got := tt.finding.EvidenceStrength(); got != tt.wantStrength {
+				t.Errorf("EvidenceStrength() = %s, want %s", got, tt.wantStrength)
 			}
 		})
+	}
+}
+
+func TestEvidenceStrengthFromScoreBoundaries(t *testing.T) {
+	tests := []struct {
+		score float64
+		want  EvidenceStrength
+	}{
+		{0, EvidenceStrengthLow},
+		{0.79, EvidenceStrengthLow},
+		{0.80, EvidenceStrengthMedium},
+		{0.899, EvidenceStrengthMedium},
+		{0.90, EvidenceStrengthHigh},
+		{1, EvidenceStrengthHigh},
+	}
+
+	for _, tt := range tests {
+		if got := EvidenceStrengthFromScore(tt.score); got != tt.want {
+			t.Errorf("EvidenceStrengthFromScore(%v) = %s, want %s", tt.score, got, tt.want)
+		}
 	}
 }
 

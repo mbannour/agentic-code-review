@@ -9,7 +9,7 @@ import (
 )
 
 // TestDefaultConfigIsValid checks the shipped policy passes its own validation, and that its
-// numbers are the ones the policy documents.
+// bands are the ones the policy documents.
 func TestDefaultConfigIsValid(t *testing.T) {
 	config := DefaultConfig()
 
@@ -19,21 +19,21 @@ func TestDefaultConfigIsValid(t *testing.T) {
 
 	tests := []struct {
 		name string
-		got  float64
-		want float64
+		got  findings.EvidenceStrength
+		want findings.EvidenceStrength
 	}{
-		{"blocker reviewer", config.BlockerReviewerConfidence, 0.80},
-		{"blocker verifier", config.BlockerVerifierConfidence, 0.80},
-		{"high reviewer", config.HighReviewerConfidence, 0.80},
-		{"high verifier", config.HighVerifierConfidence, 0.80},
-		{"medium reviewer", config.MediumReviewerConfidence, 0.85},
-		{"medium verifier", config.MediumVerifierConfidence, 0.85},
-		{"low summary", config.LowSummaryConfidence, 0.80},
-		{"security verifier", config.SecurityVerifierConfidence, 0.90},
+		{"blocker reviewer", config.BlockerReviewerStrength, findings.EvidenceStrengthMedium},
+		{"blocker verifier", config.BlockerVerifierStrength, findings.EvidenceStrengthMedium},
+		{"high reviewer", config.HighReviewerStrength, findings.EvidenceStrengthMedium},
+		{"high verifier", config.HighVerifierStrength, findings.EvidenceStrengthMedium},
+		{"medium reviewer", config.MediumReviewerStrength, findings.EvidenceStrengthHigh},
+		{"medium verifier", config.MediumVerifierStrength, findings.EvidenceStrengthHigh},
+		{"low summary", config.LowSummaryStrength, findings.EvidenceStrengthMedium},
+		{"security verifier", config.SecurityVerifierStrength, findings.EvidenceStrengthHigh},
 	}
 	for _, tt := range tests {
 		if tt.got != tt.want {
-			t.Errorf("%s threshold = %v, want %v", tt.name, tt.got, tt.want)
+			t.Errorf("%s strength = %v, want %v", tt.name, tt.got, tt.want)
 		}
 	}
 
@@ -55,29 +55,29 @@ func TestConfigValidationRejectsNonsense(t *testing.T) {
 		wantMsg string
 	}{
 		{
-			name:    "negative reviewer confidence",
-			mutate:  func(c *Config) { c.HighReviewerConfidence = -0.1 },
-			wantMsg: "HighReviewerConfidence",
+			name:    "unknown reviewer strength",
+			mutate:  func(c *Config) { c.HighReviewerStrength = "certain" },
+			wantMsg: "HighReviewerStrength",
 		},
 		{
-			name:    "reviewer confidence above one",
-			mutate:  func(c *Config) { c.BlockerReviewerConfidence = 1.5 },
-			wantMsg: "BlockerReviewerConfidence",
+			name:    "empty reviewer strength",
+			mutate:  func(c *Config) { c.BlockerReviewerStrength = "" },
+			wantMsg: "BlockerReviewerStrength",
 		},
 		{
-			name:    "negative verifier confidence",
-			mutate:  func(c *Config) { c.MediumVerifierConfidence = -1 },
-			wantMsg: "MediumVerifierConfidence",
+			name:    "unknown verifier strength",
+			mutate:  func(c *Config) { c.MediumVerifierStrength = "weak" },
+			wantMsg: "MediumVerifierStrength",
 		},
 		{
-			name:    "verifier confidence above one",
-			mutate:  func(c *Config) { c.SecurityVerifierConfidence = 2 },
-			wantMsg: "SecurityVerifierConfidence",
+			name:    "unknown security verifier strength",
+			mutate:  func(c *Config) { c.SecurityVerifierStrength = "very-high" },
+			wantMsg: "SecurityVerifierStrength",
 		},
 		{
-			name:    "low summary confidence out of range",
-			mutate:  func(c *Config) { c.LowSummaryConfidence = 1.01 },
-			wantMsg: "LowSummaryConfidence",
+			name:    "unknown low summary strength",
+			mutate:  func(c *Config) { c.LowSummaryStrength = "unknown" },
+			wantMsg: "LowSummaryStrength",
 		},
 		{
 			name:    "zero inline limit",
@@ -132,8 +132,8 @@ func TestConfigValidationRejectsNonsense(t *testing.T) {
 // fault rather than stopping at the first.
 func TestConfigValidationReportsEveryProblem(t *testing.T) {
 	config := Config{
-		HighReviewerConfidence:   -1,
-		MediumVerifierConfidence: 3,
+		HighReviewerStrength:   "certain",
+		MediumVerifierStrength: "weak",
 	}
 
 	err := config.Validate()
@@ -184,26 +184,26 @@ func TestZeroPolicyFallsBackToDefaults(t *testing.T) {
 }
 
 // TestThresholdLookupsBySeverity checks the per-severity accessors.
-func TestThresholdLookupsBySeverity(t *testing.T) {
+func TestStrengthLookupsBySeverity(t *testing.T) {
 	config := DefaultConfig()
 
 	tests := []struct {
 		severity     findings.Severity
-		wantReviewer float64
-		wantVerifier float64
+		wantReviewer findings.EvidenceStrength
+		wantVerifier findings.EvidenceStrength
 	}{
-		{findings.SeverityBlocker, 0.80, 0.80},
-		{findings.SeverityHigh, 0.80, 0.80},
-		{findings.SeverityMedium, 0.85, 0.85},
+		{findings.SeverityBlocker, findings.EvidenceStrengthMedium, findings.EvidenceStrengthMedium},
+		{findings.SeverityHigh, findings.EvidenceStrengthMedium, findings.EvidenceStrengthMedium},
+		{findings.SeverityMedium, findings.EvidenceStrengthHigh, findings.EvidenceStrengthHigh},
 	}
 
 	for _, tt := range tests {
 		t.Run(string(tt.severity), func(t *testing.T) {
-			if got := config.ReviewerThreshold(tt.severity); got != tt.wantReviewer {
-				t.Errorf("ReviewerThreshold(%s) = %v, want %v", tt.severity, got, tt.wantReviewer)
+			if got := config.ReviewerStrength(tt.severity); got != tt.wantReviewer {
+				t.Errorf("ReviewerStrength(%s) = %v, want %v", tt.severity, got, tt.wantReviewer)
 			}
-			if got := config.VerifierThreshold(tt.severity); got != tt.wantVerifier {
-				t.Errorf("VerifierThreshold(%s) = %v, want %v", tt.severity, got, tt.wantVerifier)
+			if got := config.VerifierStrength(tt.severity); got != tt.wantVerifier {
+				t.Errorf("VerifierStrength(%s) = %v, want %v", tt.severity, got, tt.wantVerifier)
 			}
 		})
 	}
@@ -220,7 +220,7 @@ func TestReasonRendering(t *testing.T) {
 	}
 
 	reasons := Reasons{
-		{Code: ReasonVerifiedValid, Detail: "verifier confidence 97%"},
+		{Code: ReasonVerifiedValid, Detail: "verifier evidence strength HIGH"},
 		{Code: ReasonCommentLimit},
 	}
 	if got := reasons.Primary().Code; got != ReasonVerifiedValid {

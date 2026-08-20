@@ -11,6 +11,7 @@ import (
 	"github.com/your-company/agentic-code-review/internal/analysis"
 	"github.com/your-company/agentic-code-review/internal/claude"
 	"github.com/your-company/agentic-code-review/internal/contextselect"
+	"github.com/your-company/agentic-code-review/internal/evaluation"
 	"github.com/your-company/agentic-code-review/internal/evidence"
 	"github.com/your-company/agentic-code-review/internal/findings"
 	"github.com/your-company/agentic-code-review/internal/github"
@@ -76,6 +77,24 @@ func runReview(args []string) error {
 		"versioned JSON configuration for read-only external evidence connectors",
 	)
 
+	capturePredictions := fs.String(
+		"capture-predictions",
+		"",
+		"write this run's validated findings to a new prediction snapshot for arc evaluate",
+	)
+
+	captureCase := fs.String(
+		"capture-case",
+		"",
+		"evaluation case ID this run is captured under (default: owner/repo#number)",
+	)
+
+	captureRun := fs.String(
+		"capture-run",
+		"",
+		"evaluation run name recorded in the snapshot (required with --capture-predictions)",
+	)
+
 	useClaude := fs.Bool(
 		"claude",
 		false,
@@ -97,6 +116,19 @@ func runReview(args []string) error {
 	// from looking like it did something.
 	if *doPublish && !*useClaude {
 		return errors.New("--publish requires --claude")
+	}
+
+	// Capture records what the reviewer proposed, so there is nothing to capture
+	// without a reviewer run. Refusing here keeps a long review from ending in a
+	// flag error, and keeps the flag from looking like it produced a snapshot.
+	if *capturePredictions != "" && !*useClaude {
+		return errors.New("--capture-predictions requires --claude")
+	}
+	if *capturePredictions == "" && (*captureCase != "" || *captureRun != "") {
+		return errors.New("--capture-case and --capture-run require --capture-predictions")
+	}
+	if *capturePredictions != "" && strings.TrimSpace(*captureRun) == "" {
+		return errors.New("--capture-run is required with --capture-predictions")
 	}
 
 	if *prURL == "" {
@@ -247,6 +279,11 @@ func runReview(args []string) error {
 		repoDir:      *repoDir,
 		publish:      *doPublish,
 		jiraKey:      ticketKeyString(ticketFound, ticketKey),
+		capture: capture{
+			path:    *capturePredictions,
+			runName: *captureRun,
+			caseID:  captureCaseID(*captureCase, pr),
+		},
 	})
 }
 
@@ -274,6 +311,24 @@ type claudeStage struct {
 	repoDir      string
 	publish      bool
 	jiraKey      string
+	capture      capture
+}
+
+// capture is where a run's validated findings are recorded for later scoring.
+// An empty path disables it, which is the default: measurement is opt-in.
+type capture struct {
+	path    string
+	runName string
+	caseID  string
+}
+
+// captureCaseID defaults the evaluation case to the pull request it reviewed, so
+// a suite's case IDs are stable and mean something without a lookup table.
+func captureCaseID(explicit string, pr github.PullRequest) string {
+	if trimmed := strings.TrimSpace(explicit); trimmed != "" {
+		return trimmed
+	}
+	return fmt.Sprintf("%s/%s#%d", pr.Owner, pr.Repo, pr.Number)
 }
 
 // runClaudeReview hands the selected context to the Claude adapter, then decides
@@ -295,6 +350,15 @@ func runClaudeReview(ctx context.Context, stage claudeStage) error {
 
 	printClaudeOutcome(outcome)
 
+	// Capture the validated proposal before verification and policy narrow it. What
+	// this snapshot measures is the reviewer's precision and recall; what policy did
+	// with the result is a separate, already-printed question.
+	if stage.capture.path != "" {
+		if err := captureRun(stage, outcome.Result); err != nil {
+			return err
+		}
+	}
+
 	// Adversarial verification sits between the reviewer and publication. Every finding
 	// that could reach a line is attacked before it may reach one; a finding that could
 	// not — low severity, summary-only — is not worth another invocation.
@@ -306,8 +370,8 @@ func runClaudeReview(ctx context.Context, stage claudeStage) error {
 
 	printVerification(report)
 
-	// One deterministic policy decides every disposition, from the reviewer's confidence,
-	// the verifier's verdict and confidence, the severity, the category, the evidence, and
+	// One deterministic policy decides every disposition, from the reviewer's evidence
+	// strength, the verifier's verdict and evidence strength, the severity, the category, and
 	// whether GitHub has a line to attach the comment to. Neither model has a vote.
 	mapper := publish.NewMapperFromChangedFiles(stage.changedFiles)
 	plan := publish.NewPolicy().BuildPlan(
@@ -328,6 +392,33 @@ func runClaudeReview(ctx context.Context, stage claudeStage) error {
 	return runPublication(ctx, stage, plan)
 }
 
+// captureRun writes this run's validated findings as a prediction snapshot.
+//
+// A capture failure fails the review rather than being reported and stepped over: a
+// measurement run whose snapshot silently went missing is worse than one that stopped,
+// because the absence looks like a case that found nothing.
+func captureRun(stage claudeStage, result findings.ReviewResult) error {
+	set, err := evaluation.Snapshot(evaluation.CaptureRequest{
+		RunName: stage.capture.runName,
+		CaseID:  stage.capture.caseID,
+	}, result)
+	if err != nil {
+		return err
+	}
+	if err := evaluation.WriteSnapshot(stage.capture.path, set); err != nil {
+		return err
+	}
+
+	fmt.Println()
+	fmt.Println("Prediction Capture")
+	fmt.Println()
+	fmt.Printf("Run:      %s\n", set.RunName)
+	fmt.Printf("Case:     %s\n", set.Cases[0].ID)
+	fmt.Printf("Findings: %d\n", len(set.Cases[0].Findings))
+	fmt.Printf("Written:  %s\n", stage.capture.path)
+	return nil
+}
+
 // printVerification renders the verdict on each candidate finding, then the tally.
 //
 // Both sides are shown — what the reviewer claimed and what the verifier concluded —
@@ -346,13 +437,13 @@ func printVerification(report verification.Report) {
 	for _, item := range report.Outcomes {
 		fmt.Println()
 		fmt.Printf("%s\n", item.Finding.ID)
-		fmt.Printf("  Reviewer:  %s / %d%%\n",
-			item.Finding.Severity.Display(), item.Finding.ConfidencePercent())
+		fmt.Printf("  Severity:           %s\n", item.Finding.Severity.Display())
+		fmt.Printf("  Reviewer evidence:  %s\n", item.Finding.EvidenceStrength().Display())
 
 		switch item.Status {
 		case verification.StatusVerified:
-			fmt.Printf("  Verdict:   %s / %d%%\n",
-				item.Result.Verdict.Display(), item.Result.ConfidencePercent())
+			fmt.Printf("  Verdict:            %s\n", item.Result.Verdict.Display())
+			fmt.Printf("  Verifier evidence:  %s\n", item.Result.EvidenceStrength().Display())
 			printWrapped("  Reason:    ", item.Result.Reason)
 		case verification.StatusNotRequired:
 			fmt.Printf("  Verdict:   SKIPPED\n")
@@ -1065,7 +1156,7 @@ func printUsage() {
 Usage:
 
   arc review --pr <github-pr-url> [--evidence-config FILE] [--claude] [--publish]
-  arc evaluate --labels <labels.json> --predictions <predictions.json>
+  arc evaluate --labels <labels.json> --predictions <file-or-dir>
 
 Options:
 
@@ -1074,13 +1165,16 @@ Options:
   --format     markdown | json
   --repo-dir   local checkout to run deterministic checks against (optional)
   --evidence-config versioned connector configuration for external review evidence (optional)
+  --capture-predictions  write this run's validated findings to a new snapshot (optional)
+  --capture-run          run name recorded in the snapshot (required with capture)
+  --capture-case         evaluation case ID (default: owner/repo#number)
   --claude     run the review through the local Claude Code CLI (optional)
   --publish    publish the findings as a GitHub PR review (requires --claude)
 
 Evaluation:
 
   --labels       human-labelled ground truth JSON
-  --predictions  captured reviewer predictions JSON
+  --predictions  captured reviewer predictions: one snapshot, or a directory of them
   --format       markdown | json (default: markdown)
 
 Example:

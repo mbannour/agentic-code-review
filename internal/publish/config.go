@@ -3,42 +3,41 @@ package publish
 import (
 	"errors"
 	"fmt"
-	"strconv"
 
 	"github.com/your-company/agentic-code-review/internal/findings"
 )
 
-// Default publication thresholds and limits.
+// Default publication evidence-strength gates and limits.
 //
 // They live here, together, because they are the whole of this tool's publishing
 // authority. Scattered through the decision code they would be impossible to review as a
-// policy; gathered here they can be read in one sitting and argued about as numbers.
+// policy; gathered here they can be read in one sitting and argued about as bands.
 //
 // Nothing outside this package's code may change them. Repository rules, the pull request
 // body, a Jira ticket, and both model invocations all influence what the review says —
 // none of them influences what is allowed to be published.
 const (
-	// Reviewer-confidence gates, by severity. A more serious claim is allowed a slightly
-	// weaker case, because the cost of missing a blocker exceeds the cost of a wrong
-	// medium.
-	DefaultBlockerReviewerConfidence = 0.80
-	DefaultHighReviewerConfidence    = 0.80
-	DefaultMediumReviewerConfidence  = 0.85
+	// Reviewer evidence-strength gates, by severity. A more serious claim is allowed a
+	// slightly weaker case, because the cost of missing a blocker exceeds the cost of a
+	// wrong medium.
+	DefaultBlockerReviewerStrength = findings.EvidenceStrengthMedium
+	DefaultHighReviewerStrength    = findings.EvidenceStrengthMedium
+	DefaultMediumReviewerStrength  = findings.EvidenceStrengthHigh
 
-	// Verifier-confidence gates, by severity. They mirror the reviewer's and are checked
-	// independently: the two numbers measure different things and must never be averaged.
-	DefaultBlockerVerifierConfidence = 0.80
-	DefaultHighVerifierConfidence    = 0.80
-	DefaultMediumVerifierConfidence  = 0.85
+	// Verifier evidence-strength gates, by severity. They mirror the reviewer's and are
+	// checked independently: the two ordinal assessments must never be averaged.
+	DefaultBlockerVerifierStrength = findings.EvidenceStrengthMedium
+	DefaultHighVerifierStrength    = findings.EvidenceStrengthMedium
+	DefaultMediumVerifierStrength  = findings.EvidenceStrengthHigh
 
-	// DefaultLowSummaryConfidence is what a low-severity finding needs to be worth
-	// mentioning at all. Low findings are never attached to a line.
-	DefaultLowSummaryConfidence = 0.80
+	// DefaultLowSummaryStrength is what a low-severity finding needs to be worth mentioning
+	// at all. Low findings are never attached to a line.
+	DefaultLowSummaryStrength = findings.EvidenceStrengthMedium
 
-	// DefaultSecurityVerifierConfidence is the stricter bar a security finding must clear
+	// DefaultSecurityVerifierStrength is the stricter bar a security finding must clear
 	// to reach a line. A wrong security comment is expensive out of proportion to its
 	// severity: it alarms people, and it teaches them to distrust the next one.
-	DefaultSecurityVerifierConfidence = 0.90
+	DefaultSecurityVerifierStrength = findings.EvidenceStrengthHigh
 
 	// DefaultMaxInlineComments bounds how many lines one review may annotate.
 	DefaultMaxInlineComments = 10
@@ -55,26 +54,26 @@ const (
 // MaxInlineComments is retained as the documented ceiling on inline comments.
 const MaxInlineComments = DefaultMaxInlineComments
 
-// Config is the publication policy's thresholds and limits.
+// Config is the publication policy's evidence-strength gates and limits.
 //
 // A Config is validated before use, and an invalid one is refused rather than repaired:
 // a policy that silently fell back to defaults would publish under rules nobody chose.
 type Config struct {
-	BlockerReviewerConfidence float64
-	BlockerVerifierConfidence float64
+	BlockerReviewerStrength findings.EvidenceStrength
+	BlockerVerifierStrength findings.EvidenceStrength
 
-	HighReviewerConfidence float64
-	HighVerifierConfidence float64
+	HighReviewerStrength findings.EvidenceStrength
+	HighVerifierStrength findings.EvidenceStrength
 
-	MediumReviewerConfidence float64
-	MediumVerifierConfidence float64
+	MediumReviewerStrength findings.EvidenceStrength
+	MediumVerifierStrength findings.EvidenceStrength
 
-	LowSummaryConfidence float64
+	LowSummaryStrength findings.EvidenceStrength
 
-	// SecurityVerifierConfidence is an additional inline-only gate for security findings.
+	// SecurityVerifierStrength is an additional inline-only gate for security findings.
 	// A security finding that clears its severity thresholds but not this one is still
 	// reported — in the review body, where being wrong costs far less.
-	SecurityVerifierConfidence float64
+	SecurityVerifierStrength findings.EvidenceStrength
 
 	MaxInlineComments    int
 	MaxSummaryFindings   int
@@ -89,18 +88,18 @@ type Config struct {
 // DefaultConfig returns the policy this tool ships with.
 func DefaultConfig() Config {
 	return Config{
-		BlockerReviewerConfidence: DefaultBlockerReviewerConfidence,
-		BlockerVerifierConfidence: DefaultBlockerVerifierConfidence,
+		BlockerReviewerStrength: DefaultBlockerReviewerStrength,
+		BlockerVerifierStrength: DefaultBlockerVerifierStrength,
 
-		HighReviewerConfidence: DefaultHighReviewerConfidence,
-		HighVerifierConfidence: DefaultHighVerifierConfidence,
+		HighReviewerStrength: DefaultHighReviewerStrength,
+		HighVerifierStrength: DefaultHighVerifierStrength,
 
-		MediumReviewerConfidence: DefaultMediumReviewerConfidence,
-		MediumVerifierConfidence: DefaultMediumVerifierConfidence,
+		MediumReviewerStrength: DefaultMediumReviewerStrength,
+		MediumVerifierStrength: DefaultMediumVerifierStrength,
 
-		LowSummaryConfidence: DefaultLowSummaryConfidence,
+		LowSummaryStrength: DefaultLowSummaryStrength,
 
-		SecurityVerifierConfidence: DefaultSecurityVerifierConfidence,
+		SecurityVerifierStrength: DefaultSecurityVerifierStrength,
 
 		MaxInlineComments:    DefaultMaxInlineComments,
 		MaxSummaryFindings:   DefaultMaxSummaryFindings,
@@ -115,29 +114,28 @@ var ErrInvalidConfig = errors.New("invalid publication policy configuration")
 
 // Validate reports every problem with the configuration.
 //
-// It is strict on purpose. A threshold outside 0..1 or a limit of zero is a programming
-// mistake, and the safe response is to refuse to publish rather than to guess what was
-// meant.
+// It is strict on purpose. An unknown strength or a limit of zero is a programming mistake,
+// and the safe response is to refuse to publish rather than to guess what was meant.
 func (c Config) Validate() error {
 	var problems []string
 
-	thresholds := []struct {
+	strengths := []struct {
 		name  string
-		value float64
+		value findings.EvidenceStrength
 	}{
-		{"BlockerReviewerConfidence", c.BlockerReviewerConfidence},
-		{"BlockerVerifierConfidence", c.BlockerVerifierConfidence},
-		{"HighReviewerConfidence", c.HighReviewerConfidence},
-		{"HighVerifierConfidence", c.HighVerifierConfidence},
-		{"MediumReviewerConfidence", c.MediumReviewerConfidence},
-		{"MediumVerifierConfidence", c.MediumVerifierConfidence},
-		{"LowSummaryConfidence", c.LowSummaryConfidence},
-		{"SecurityVerifierConfidence", c.SecurityVerifierConfidence},
+		{"BlockerReviewerStrength", c.BlockerReviewerStrength},
+		{"BlockerVerifierStrength", c.BlockerVerifierStrength},
+		{"HighReviewerStrength", c.HighReviewerStrength},
+		{"HighVerifierStrength", c.HighVerifierStrength},
+		{"MediumReviewerStrength", c.MediumReviewerStrength},
+		{"MediumVerifierStrength", c.MediumVerifierStrength},
+		{"LowSummaryStrength", c.LowSummaryStrength},
+		{"SecurityVerifierStrength", c.SecurityVerifierStrength},
 	}
-	for _, threshold := range thresholds {
-		if threshold.value < 0 || threshold.value > 1 {
-			problems = append(problems, fmt.Sprintf("%s: %s is outside 0.0..1.0",
-				threshold.name, strconv.FormatFloat(threshold.value, 'g', -1, 64)))
+	for _, strength := range strengths {
+		if !strength.value.Valid() {
+			problems = append(problems, fmt.Sprintf("%s: %q is not LOW, MEDIUM, or HIGH",
+				strength.name, strength.value))
 		}
 	}
 
@@ -171,31 +169,31 @@ func (c Config) Validate() error {
 	return fmt.Errorf("%w: %d problem(s): %s", ErrInvalidConfig, len(problems), joinLines(problems))
 }
 
-// ReviewerThreshold returns the reviewer-confidence gate for a severity.
-func (c Config) ReviewerThreshold(severity findings.Severity) float64 {
+// ReviewerStrength returns the minimum reviewer evidence strength for a severity.
+func (c Config) ReviewerStrength(severity findings.Severity) findings.EvidenceStrength {
 	switch severity {
 	case findings.SeverityBlocker:
-		return c.BlockerReviewerConfidence
+		return c.BlockerReviewerStrength
 	case findings.SeverityHigh:
-		return c.HighReviewerConfidence
+		return c.HighReviewerStrength
 	case findings.SeverityMedium:
-		return c.MediumReviewerConfidence
+		return c.MediumReviewerStrength
 	default:
-		return c.LowSummaryConfidence
+		return c.LowSummaryStrength
 	}
 }
 
-// VerifierThreshold returns the verifier-confidence gate for a severity.
-func (c Config) VerifierThreshold(severity findings.Severity) float64 {
+// VerifierStrength returns the minimum verifier evidence strength for a severity.
+func (c Config) VerifierStrength(severity findings.Severity) findings.EvidenceStrength {
 	switch severity {
 	case findings.SeverityBlocker:
-		return c.BlockerVerifierConfidence
+		return c.BlockerVerifierStrength
 	case findings.SeverityHigh:
-		return c.HighVerifierConfidence
+		return c.HighVerifierStrength
 	case findings.SeverityMedium:
-		return c.MediumVerifierConfidence
+		return c.MediumVerifierStrength
 	default:
-		return c.MediumVerifierConfidence
+		return c.MediumVerifierStrength
 	}
 }
 

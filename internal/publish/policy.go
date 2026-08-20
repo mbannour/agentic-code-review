@@ -69,12 +69,13 @@ func (d Decision) Inline() bool { return d.Disposition == DispositionInline }
 // Published reports whether the finding reaches GitHub in any form.
 func (d Decision) Published() bool { return d.Disposition != DispositionSuppress }
 
-// VerifierConfidence returns the verdict confidence, or zero when unverified.
-func (d Decision) VerifierConfidence() float64 {
+// VerifierEvidenceStrength returns the verdict's evidence band, or LOW when unverified.
+// Verification status is always checked separately, so the fallback cannot admit a result.
+func (d Decision) VerifierEvidenceStrength() findings.EvidenceStrength {
 	if d.Verification == nil {
-		return 0
+		return findings.EvidenceStrengthLow
 	}
-	return d.Verification.Confidence
+	return d.Verification.EvidenceStrength()
 }
 
 // Stats is the tally of one policy run.
@@ -84,14 +85,14 @@ type Stats struct {
 	Summary    int
 	Suppressed int
 
-	SuppressedInvalidVerifier    int
-	SuppressedUncertainVerifier  int
-	SuppressedVerificationFailed int
-	SuppressedLowConfidence      int
-	SuppressedEvidence           int
-	LimitedByInlineCap           int
-	LimitedBySummaryCap          int
-	LimitedByTotalCap            int
+	SuppressedInvalidVerifier     int
+	SuppressedUncertainVerifier   int
+	SuppressedVerificationFailed  int
+	SuppressedLowEvidenceStrength int
+	SuppressedEvidence            int
+	LimitedByInlineCap            int
+	LimitedBySummaryCap           int
+	LimitedByTotalCap             int
 }
 
 // categoryPriority orders categories for tie-breaking among otherwise comparable findings.
@@ -170,7 +171,7 @@ func CandidatesFrom(report verification.Report) []Candidate {
 // BuildPlan decides the disposition of every candidate and assembles the publication plan.
 //
 // The order of work is the policy: each finding is judged on its own merits first — verdict,
-// evidence, confidence, category, mappability — and only then do the quotas apply. That
+// evidence, evidence strength, category, mappability — and only then do the quotas apply. That
 // order matters, because a quota is a bound on noise, not a judgement about a finding: a
 // finding pushed out of the inline slots is still worth reporting in the body, and one
 // pushed out of the body is still worth showing locally.
@@ -220,7 +221,7 @@ func (p Policy) evaluate(candidate Candidate, mapper Mapper) Decision {
 	}
 
 	// Evidence comes first. A finding without the evidence its category requires has not
-	// been substantiated, whatever a model's confidence in it, and no later gate can repair
+	// been substantiated, whatever evidence strength a model assigned it, and no later gate can repair
 	// that.
 	if missing, ok := evidenceShortfall(finding); !ok {
 		return suppress(decision, missing)
@@ -233,7 +234,7 @@ func (p Policy) evaluate(candidate Candidate, mapper Mapper) Decision {
 	}
 	if decision.Verification != nil {
 		decision.Reasons = append(decision.Reasons,
-			reason(ReasonVerifiedValid, "verifier confidence %.0f%%", decision.VerifierConfidence()*100))
+			reason(ReasonVerifiedValid, "verifier evidence strength %s", decision.VerifierEvidenceStrength().Display()))
 	} else {
 		decision.Reasons = append(decision.Reasons, Reason{Code: ReasonVerificationNotRequired})
 	}
@@ -241,26 +242,26 @@ func (p Policy) evaluate(candidate Candidate, mapper Mapper) Decision {
 	// Low severity is never inline. It is worth mentioning if the reviewer was reasonably
 	// sure, and worth nothing otherwise.
 	if finding.Severity == findings.SeverityLow {
-		if finding.Confidence < config.LowSummaryConfidence {
-			return suppress(decision, reason(ReasonLowConfidence,
-				"reviewer confidence %.2f is below %.2f for a low-severity finding",
-				finding.Confidence, config.LowSummaryConfidence))
+		if !finding.EvidenceStrength().AtLeast(config.LowSummaryStrength) {
+			return suppress(decision, reason(ReasonLowEvidenceStrength,
+				"reviewer evidence strength %s is below required %s for a low-severity finding",
+				finding.EvidenceStrength().Display(), config.LowSummaryStrength.Display()))
 		}
 		return summarize(decision, Reason{Code: ReasonLowSeverity})
 	}
 
-	// The two confidences are gated independently and never combined. A reviewer at 0.98
-	// and a verifier at 0.71 is not a finding at 0.845; it is a claim someone is sure of
-	// and nobody could confirm.
-	if reviewerThreshold := config.ReviewerThreshold(finding.Severity); finding.Confidence < reviewerThreshold {
-		return suppress(decision, reason(ReasonLowConfidence,
-			"reviewer confidence %.2f is below %.2f for %s",
-			finding.Confidence, reviewerThreshold, finding.Severity))
+	// The two ordinal assessments are gated independently and never combined. A HIGH
+	// reviewer assessment and LOW verifier assessment is not MEDIUM; it is a strongly
+	// supported claim nobody could confirm.
+	if reviewerMinimum := config.ReviewerStrength(finding.Severity); !finding.EvidenceStrength().AtLeast(reviewerMinimum) {
+		return suppress(decision, reason(ReasonLowEvidenceStrength,
+			"reviewer evidence strength %s is below required %s for %s",
+			finding.EvidenceStrength().Display(), reviewerMinimum.Display(), finding.Severity))
 	}
-	if verifierThreshold := config.VerifierThreshold(finding.Severity); decision.VerifierConfidence() < verifierThreshold {
-		return suppress(decision, reason(ReasonLowVerifierConfidence,
-			"verifier confidence %.2f is below %.2f for %s",
-			decision.VerifierConfidence(), verifierThreshold, finding.Severity))
+	if verifierMinimum := config.VerifierStrength(finding.Severity); !decision.VerifierEvidenceStrength().AtLeast(verifierMinimum) {
+		return suppress(decision, reason(ReasonLowVerifierEvidenceStrength,
+			"verifier evidence strength %s is below required %s for %s",
+			decision.VerifierEvidenceStrength().Display(), verifierMinimum.Display(), finding.Severity))
 	}
 
 	// Category rules decide placement rather than admission: a finding that reaches here is
@@ -327,10 +328,10 @@ func (p Policy) categoryPlacement(decision Decision) (Reason, bool) {
 		// A security finding clears a stricter verifier bar to reach a line. Below it the
 		// finding is still reported, because a plausible security concern is worth a
 		// reader's attention even when it is not certain enough to interrupt them.
-		if decision.VerifierConfidence() < config.SecurityVerifierConfidence {
+		if !decision.VerifierEvidenceStrength().AtLeast(config.SecurityVerifierStrength) {
 			return reason(ReasonCategoryPolicy,
-				"security findings need verifier confidence %.2f to be inline; this is %.2f",
-				config.SecurityVerifierConfidence, decision.VerifierConfidence()), false
+				"security findings need verifier evidence strength %s to be inline; this is %s",
+				config.SecurityVerifierStrength.Display(), decision.VerifierEvidenceStrength().Display()), false
 		}
 
 	case findings.CategoryArchitecture:
@@ -458,8 +459,8 @@ func (p Policy) applyQuotas(decisions []Decision, config Config) {
 
 // orderedIndexes returns decision indexes in publication priority order.
 //
-// The keys are, in order: severity, category priority, reviewer confidence descending,
-// verifier confidence descending, file, start line, and ID. The last three exist so the
+// The keys are, in order: severity, category priority, reviewer evidence strength descending,
+// verifier evidence strength descending, file, start line, and ID. The last three exist so the
 // order never depends on the order a model happened to emit its findings in.
 func orderedIndexes(decisions []Decision) []int {
 	order := make([]int, len(decisions))
@@ -476,11 +477,11 @@ func orderedIndexes(decisions []Decision) []int {
 		if cx, cy := categoryPriority(x.Finding.Category), categoryPriority(y.Finding.Category); cx != cy {
 			return cx < cy
 		}
-		if x.Finding.Confidence != y.Finding.Confidence {
-			return x.Finding.Confidence > y.Finding.Confidence
+		if sx, sy := x.Finding.EvidenceStrength().Rank(), y.Finding.EvidenceStrength().Rank(); sx != sy {
+			return sx > sy
 		}
-		if x.VerifierConfidence() != y.VerifierConfidence() {
-			return x.VerifierConfidence() > y.VerifierConfidence()
+		if sx, sy := x.VerifierEvidenceStrength().Rank(), y.VerifierEvidenceStrength().Rank(); sx != sy {
+			return sx > sy
 		}
 		if x.Finding.File != y.Finding.File {
 			return x.Finding.File < y.Finding.File
@@ -555,8 +556,8 @@ func tallyDecisions(decisions []Decision) Stats {
 			stats.SuppressedUncertainVerifier++
 		case ReasonVerificationFailed, ReasonVerificationMissing:
 			stats.SuppressedVerificationFailed++
-		case ReasonLowConfidence, ReasonLowVerifierConfidence:
-			stats.SuppressedLowConfidence++
+		case ReasonLowEvidenceStrength, ReasonLowVerifierEvidenceStrength:
+			stats.SuppressedLowEvidenceStrength++
 		case ReasonEvidenceMissing, ReasonRequirementEvidenceMissing:
 			stats.SuppressedEvidence++
 		}
@@ -585,12 +586,12 @@ func summarize(decision Decision, why Reason) Decision {
 // Explain renders one decision as a short multi-line block for terminal output.
 func (d Decision) Explain() string {
 	out := fmt.Sprintf("  severity:       %s\n", d.Finding.Severity.Display())
-	out += fmt.Sprintf("  reviewer:       %d%%\n", d.Finding.ConfidencePercent())
+	out += fmt.Sprintf("  reviewer:       %s evidence\n", d.Finding.EvidenceStrength().Display())
 
 	switch {
 	case d.Verification != nil:
-		out += fmt.Sprintf("  verifier:       %s / %d%%\n",
-			d.Verification.Verdict.Display(), d.Verification.ConfidencePercent())
+		out += fmt.Sprintf("  verifier:       %s / %s evidence\n",
+			d.Verification.Verdict.Display(), d.Verification.EvidenceStrength().Display())
 	case d.VerificationStatus == verification.StatusNotRequired:
 		out += "  verification:   not required\n"
 	case d.VerificationStatus == verification.StatusFailed:

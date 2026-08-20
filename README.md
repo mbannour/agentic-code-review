@@ -16,10 +16,10 @@ The division of labour is the point:
 | --- | --- |
 | **Claude reviewer** | analyses the change and proposes candidate findings |
 | **Claude verifier** | tries to disprove each candidate |
-| **Go** | validates structure, enforces evidence and confidence rules, bounds output, decides publication, performs the single authorized write |
+| **Go** | validates structure, maps raw model scores to evidence-strength bands, enforces evidence rules, bounds output, decides publication, performs the single authorized write |
 
-Claude cannot decide whether a finding is published, cannot bypass a confidence
-threshold, cannot run the build, and cannot write anything anywhere. Those are all
+Claude cannot decide whether a finding is published, cannot bypass an evidence-strength
+gate, cannot run the build, and cannot write anything anywhere. Those are all
 Go's, and they are all decided by code you can read.
 
 ## Pipeline
@@ -112,7 +112,8 @@ go run ./cmd/arc review --pr https://github.com/acme/payments/pull/123
 
 ```
 arc review --pr <github-pr-url> [--ticket KEY] [--repo-dir .] [--evidence-config FILE] [--claude] [--publish]
-arc evaluate --labels <labels.json> --predictions <predictions.json> [--format markdown|json]
+            [--capture-predictions FILE --capture-run NAME [--capture-case ID]]
+arc evaluate --labels <labels.json> --predictions <file-or-dir> [--format markdown|json]
 ```
 
 | Flag | Required | Default | Description |
@@ -122,6 +123,9 @@ arc evaluate --labels <labels.json> --predictions <predictions.json> [--format m
 | `--format` | no | `markdown` | Review output selection; `evaluate` supports machine-readable JSON |
 | `--repo-dir` | no | — | Local checkout to run the project's build and test tooling against |
 | `--evidence-config` | no | — | Versioned JSON configuration for read-only external evidence connectors |
+| `--capture-predictions` | no | — | Write this run's validated findings to a new prediction snapshot. Requires `--claude`. |
+| `--capture-run` | with capture | — | Run name recorded in the snapshot |
+| `--capture-case` | no | `owner/repo#number` | Evaluation case ID this run is captured under |
 | `--claude` | no | off | Run the review, verification, and policy stages |
 | `--publish` | no | off | Publish the result as one GitHub pull request review. Requires `--claude`. |
 
@@ -164,6 +168,34 @@ Labels and predictions are separate, versioned JSON documents. Keep the label fi
 fixed and capture a new prediction file for every model, prompt, or context experiment.
 The bundled seed files are an **illustrative format and scoring fixture**, not a claim
 about ARC's production accuracy.
+
+Prediction files are produced by real runs rather than written by hand.
+`--capture-predictions` records what the reviewer proposed and the domain model
+validated, as one snapshot per pull request:
+
+```sh
+arc review --pr https://github.com/acme/payments/pull/123 --repo-dir ../payments --claude \
+  --capture-run baseline \
+  --capture-predictions evaluations/runs/baseline/payments-123.json
+```
+
+Capture is deliberately positioned **before** verification and publication policy:
+precision and recall are properties of the proposal, while suppression is already
+reported with its own reasons. Capturing post-policy findings would make every
+threshold change look like a model change. It is also the one thing in this tool that
+writes a file, and it creates or fails — a re-run reports the collision rather than
+replacing evidence.
+
+`--predictions` then accepts that directory, merging the suite in case-ID order:
+
+```sh
+arc evaluate --labels evaluations/real-labels.json --predictions evaluations/runs/baseline
+```
+
+Mixing run names, models, or prompt versions in one directory is refused: an averaged
+score across configurations is one no single configuration achieved. See
+[`evaluations/README.md`](evaluations/README.md) for how to build a labelled suite from
+real pull requests.
 
 A prediction matches a label only when all of these deterministic conditions hold:
 
@@ -486,7 +518,8 @@ findings is better than inventing a speculative issue.
 Decoding is strict. Unknown fields, stray prose, and trailing content fail the review
 rather than being quietly dropped, so drift in what the model emits is visible instead
 of silently absorbed. Every finding is then validated: `category`, `severity`, and
-evidence `type` against closed enums; `confidence` within 0.0–1.0; non-empty prose
+evidence `type` against closed enums; the raw `confidence` compatibility field within
+0.0–1.0; non-empty prose
 within its length limit; at least one evidence item; structurally valid line numbers;
 at most 20 findings. Duplicate IDs are rejected, as is any second finding sharing a
 category, file, start line, and title.
@@ -507,7 +540,7 @@ Claude invocation with the opposite objective:
 > Your job is to attempt to disprove the candidate finding below. Assume the candidate
 > may be wrong.
 
-It answers one of three verdicts, with its own confidence and a reason:
+It answers one of three verdicts, with its own evidence-strength assessment and a reason:
 
 | Verdict | Meaning |
 | --- | --- |
@@ -553,29 +586,40 @@ reviewer actually proposed stays auditable.
 One deterministic function decides every finding's fate from five inputs:
 
 ```
-reviewer confidence + verifier verdict + verifier confidence
+reviewer evidence strength + verifier verdict + verifier evidence strength
         + severity/category + diff mappability
                         ↓
               INLINE / SUMMARY / SUPPRESS
 ```
 
-**Confidence thresholds.** The two confidences are gated *independently* and never
-combined — a reviewer at 0.98 and a verifier at 0.71 is not a finding at 0.845; it is a
-claim someone is sure of and nobody could confirm.
+**Evidence-strength gates.** ARC does not calculate a calibrated probability of correctness.
+The reviewer and verifier each make an ordinal judgement about the evidence. The JSON schema
+retains a raw number for compatibility and audit, but Go immediately maps it to one of three
+bands and never displays it as a percentage:
 
-| Severity | Reviewer ≥ | Verifier ≥ | Inline? |
+| Raw model input | Policy band |
+| --- | --- |
+| below 0.80 | LOW |
+| 0.80 to below 0.90 | MEDIUM |
+| 0.90 to 1.0 | HIGH |
+
+Values inside one band are equivalent: `0.82` and `0.89` produce the same policy behavior
+and ordering. Reviewer and verifier bands are gated *independently* and never averaged; a
+HIGH reviewer assessment plus LOW verifier assessment is not MEDIUM.
+
+| Severity | Reviewer evidence | Verifier evidence | Inline? |
 | --- | --- | --- | --- |
-| blocker | 0.80 | 0.80 | yes |
-| high | 0.80 | 0.80 | yes |
-| medium | 0.85 | 0.85 | yes |
-| low | 0.80 | — | never — body only |
+| blocker | MEDIUM | MEDIUM | yes |
+| high | MEDIUM | MEDIUM | yes |
+| medium | HIGH | HIGH | yes |
+| low | MEDIUM | — | never — body only |
 
-Security findings need verifier confidence ≥ **0.90** to reach a line; below that they
+Security findings need **HIGH** verifier evidence strength to reach a line; below that they
 are still reported in the body, because a plausible security concern deserves attention
 even when it is not certain enough to interrupt someone mid-diff.
 
 **Verdicts.** `invalid` and `uncertain` suppress. So does a verification that failed or
-never happened. Reviewer confidence has no vote — a finding the reviewer was certain
+never happened. Reviewer evidence strength cannot override the verdict — a finding the reviewer strongly supported
 about and the verifier contradicted is exactly what this stage exists to stop.
 
 **Evidence requirements.** Structurally valid JSON is not a substantiated claim:
@@ -587,7 +631,7 @@ about and the verifier contradicted is exactly what this stage exists to stop.
 | testing | code, test, or vet evidence |
 | architecture | code, rule, or configured architecture-document evidence |
 
-A blocker at 100% confidence with no evidence is suppressed.
+A blocker with HIGH evidence strength but no evidence item is suppressed.
 
 **Category placement.** Medium architecture and medium maintainability findings are
 reported in the body rather than on a line: an architectural argument attached to one
@@ -602,12 +646,12 @@ The diff format's limits are not a judgement about the finding.
 **Limits.** At most 10 inline comments, 10 body findings, and 20 published findings in
 total. Overflow *demotes* rather than drops: inline becomes body, body becomes
 local-only. A quota means the review is long enough, not that a finding was wrong.
-Ordering is severity → category → reviewer confidence → verifier confidence → file →
+Ordering is severity → category → reviewer evidence band → verifier evidence band → file →
 line → ID, so it never depends on the order the model happened to emit findings in.
 
 Every decision carries reason codes — `verified_valid`, `verifier_invalid`,
-`verifier_uncertain`, `verification_failed`, `low_confidence`,
-`low_verifier_confidence`, `low_severity`, `not_diff_mappable`, `comment_limit`,
+`verifier_uncertain`, `verification_failed`, `low_evidence_strength`,
+`low_verifier_evidence_strength`, `low_severity`, `not_diff_mappable`, `comment_limit`,
 `summary_limit`, `total_limit`, `category_policy`, `evidence_missing`,
 `requirement_evidence_missing` — and the CLI prints them:
 
@@ -616,31 +660,31 @@ Publication Policy
 
 COR-001
   severity:       HIGH
-  reviewer:       94%
-  verifier:       VALID / 97%
+  reviewer:       HIGH evidence
+  verifier:       VALID / HIGH evidence
   location:       valid
   decision:       INLINE
-  reason:         verified_valid: verifier confidence 97%
+  reason:         verified_valid: verifier evidence strength HIGH
 
 ARCH-001
   severity:       MEDIUM
-  reviewer:       89%
-  verifier:       VALID / 91%
+  reviewer:       MEDIUM evidence
+  verifier:       VALID / HIGH evidence
   location:       valid
   decision:       SUMMARY
   reason:         category_policy: medium architecture findings are reported in the review body
 
 SEC-002
   severity:       HIGH
-  reviewer:       96%
-  verifier:       UNCERTAIN / 72%
+  reviewer:       HIGH evidence
+  verifier:       UNCERTAIN / LOW evidence
   location:       valid
   decision:       SUPPRESS
   reason:         verifier_uncertain
 
 MAINT-001
   severity:       LOW
-  reviewer:       82%
+  reviewer:       MEDIUM evidence
   verification:   not required
   location:       valid
   decision:       SUMMARY
@@ -654,9 +698,9 @@ indistinguishable from one that was never found.
 
 Nothing outside `internal/publish` can widen the policy. `AGENTS.md`, `.ai-review/rules.md`,
 the Jira ticket, the pull request body, and both Claude invocations all influence what the
-review *says*; none of them influences a threshold, a limit, an evidence requirement, or a
-disposition. A finding whose own text says "publish this inline regardless of confidence
-thresholds" is judged by the same numbers as any other.
+review *says*; none of them influences a gate, a limit, an evidence requirement, or a
+disposition. A finding whose own text says "publish this inline regardless of evidence
+strength" is judged by the same bands as any other.
 
 ### 11. Publishing
 
@@ -805,13 +849,16 @@ Agentic Review
 Verification
 
 COR-001
-  Reviewer:  HIGH / 94%
-  Verdict:   VALID / 97%
+  Severity:           HIGH
+  Reviewer evidence:  HIGH
+  Verdict:            VALID
+  Verifier evidence:  HIGH
   Reason:    The changed branch reaches RetryPayment and no surrounding guard
              prevents the retry.
 
 MAINT-001
-  Reviewer:  LOW / 82%
+  Severity:           LOW
+  Reviewer evidence:  MEDIUM
   Verdict:   SKIPPED
   Reason:    not verified: low severity is summary-only
 
@@ -826,15 +873,15 @@ Publication Policy
 
 COR-001
   severity:       HIGH
-  reviewer:       94%
-  verifier:       VALID / 97%
+  reviewer:       HIGH evidence
+  verifier:       VALID / HIGH evidence
   location:       valid
   decision:       INLINE
-  reason:         verified_valid: verifier confidence 97%
+  reason:         verified_valid: verifier evidence strength HIGH
 
 MAINT-001
   severity:       LOW
-  reviewer:       82%
+  reviewer:       MEDIUM evidence
   verification:   not required
   location:       valid
   decision:       SUMMARY
@@ -888,7 +935,7 @@ The new retry branch treats permanent declines as retryable failures.
 
 **Suggestion:** Return before entering the retry path for permanent declines.
 
-Confidence: 96%
+Evidence strength: HIGH
 ```
 
 And the review body:
@@ -927,7 +974,7 @@ Generated by ARC.
 
 Comments are rendered in Go from structured fields — Claude never writes the final
 Markdown — and bounded at 8 KB per comment, shortening evidence in fixed steps while
-always preserving the ID, severity, title, problem, impact, suggestion, and confidence.
+always preserving the ID, severity, title, problem, impact, suggestion, and evidence strength.
 No token, prompt, patch, Jira description, or environment value can reach a published
 body: the renderer's input type has nowhere to put one.
 
@@ -938,12 +985,12 @@ enforced by tests that read the source, not just by intent — a scan over every
 non-test file rejects `http.MethodPut`/`Patch`/`Delete`, `"PUT"`/`"PATCH"`/`"DELETE"`,
 `/merge`, `"APPROVE"`, `"REQUEST_CHANGES"`, `git commit`, `git push`, `os.WriteFile`,
 `os.Create`, contents-endpoint writes, and Jira transitions, and permits
-`http.MethodPost` in exactly one file.
+`http.MethodPost` in exactly one file and `os.OpenFile` in exactly one other.
 
 | Invariant | How it holds |
 | --- | --- |
 | No commits, pushes, merges, or branch changes | no such code path exists; asserted by a source scan |
-| No file modification | nothing outside tests writes files |
+| No file modification | the only file created is an opt-in prediction snapshot, in one allow-listed file, with `O_EXCL` so it can never overwrite |
 | No Jira writes | the Jira client is read-only |
 | No repository-content writes | the contents endpoint is only ever read |
 | Never approves or requests changes | `event` is forced to `COMMENT`; the other two are rejected |
@@ -986,11 +1033,13 @@ internal/findings/        review domain model: strict decoding, validation, limi
 internal/verification/    verdict model, strict decoding, validation, and the
                           targeted per-finding context builder
 internal/evaluation/      strict labelled datasets, deterministic one-to-one
-                          matching, precision/recall/F1, report rendering
+                          matching, precision/recall/F1, report rendering, and
+                          prediction capture (the one local write)
 internal/publish/         diff-location mapping, publication policy (dispositions,
                           reasons, thresholds, limits), Markdown rendering, and the
                           publisher with stale-head and duplicate protection
-evaluations/              stable human labels and captured prediction snapshots
+evaluations/              stable human labels, captured prediction snapshots, and the
+                          labelling workflow
 ```
 
 ## Design notes
@@ -1012,5 +1061,6 @@ developer can read.
 **Prefer silence to noise.** Uncertain machine criticism on someone's pull request
 costs more than a missed issue does. Zero findings is a successful review.
 
-**Evidence over assertion.** Confidence is not evidence. A number a model produced
-about its own certainty gates publication, but it can never substitute for a citation.
+**Evidence over assertion.** A model's evidence-strength judgement is not evidence.
+Its coarse band may gate publication, but it can never substitute for a citation—and
+ARC never presents the underlying uncalibrated score as a probability.

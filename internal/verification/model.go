@@ -101,9 +101,9 @@ type Evidence struct {
 
 // Result is one completed verification of one finding.
 //
-// Confidence is confidence in the verdict, not in the finding. A confident invalid
-// verdict on a finding the reviewer was also confident about is the case this whole
-// stage exists to catch.
+// Confidence is the verifier's raw ordinal input about its verdict, not a probability and
+// not confidence in the finding. A strong invalid verdict on a finding the reviewer also
+// strongly supported is the case this whole stage exists to catch.
 type Result struct {
 	FindingID  string  `json:"finding_id"`
 	Verdict    Verdict `json:"verdict"`
@@ -115,8 +115,10 @@ type Result struct {
 	ContradictingEvidence []Evidence `json:"contradicting_evidence"`
 }
 
-// ConfidencePercent renders the verdict confidence as whole percentage points.
-func (r Result) ConfidencePercent() int { return int(r.Confidence*100 + 0.5) }
+// EvidenceStrength returns the coarse evidence band used by policy and output.
+func (r Result) EvidenceStrength() findings.EvidenceStrength {
+	return findings.EvidenceStrengthFromScore(r.Confidence)
+}
 
 // Status is what happened to a candidate finding at this stage.
 type Status string

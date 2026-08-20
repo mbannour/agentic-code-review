@@ -694,8 +694,11 @@ Rules:
 - category is one of: %s
 - severity is one of: %s
 - evidence type is one of: %s
-- confidence is a number from 0.0 to 1.0, and measures the strength of your
-  evidence, not the severity of the problem
+- confidence is an internal ordinal input, not a probability or measured likelihood.
+  Use it only to select an evidence-strength band: below 0.80 = LOW, 0.80 through
+  below 0.90 = MEDIUM, and 0.90 through 1.0 = HIGH. Values within one band are
+  equivalent to ARC policy; do not imply that, for example, 0.72 means a 72%% chance
+  of correctness. It measures evidence strength, not problem severity
 - id is unique within the response; a prefix such as COR-, SEC-, TEST-, ARCH-,
   REQ-, or MAINT- is conventional but the category field is what counts
 - file must be one of the changed files listed above, written exactly as listed

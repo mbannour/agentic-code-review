@@ -59,7 +59,7 @@ func NewRenderer() Renderer { return Renderer{} }
 //
 // If the full rendering exceeds MaxInlineCommentBytes, evidence is shortened in fixed
 // steps until it fits. The identity of the finding — ID, severity, title, problem,
-// impact, suggestion, and confidence — is never shortened away, because those are what
+// impact, suggestion, and evidence strength — is never shortened away, because those are what
 // make the comment actionable.
 func (r Renderer) InlineComment(finding findings.Finding) string {
 	for _, level := range []evidenceDetail{
@@ -101,7 +101,7 @@ func renderComment(finding findings.Finding, level evidenceDetail) string {
 	}
 
 	fmt.Fprintf(&out, "\n**Suggestion:** %s\n", strings.TrimSpace(finding.Suggestion))
-	fmt.Fprintf(&out, "\nConfidence: %d%%\n", finding.ConfidencePercent())
+	fmt.Fprintf(&out, "\nEvidence strength: %s\n", finding.EvidenceStrength().Display())
 
 	return out.String()
 }
@@ -233,7 +233,7 @@ func writeAdditionalSection(out *strings.Builder, plan Plan) {
 		fmt.Fprintf(out, "%s\n\n", strings.TrimSpace(finding.Problem))
 		fmt.Fprintf(out, "**Impact:** %s\n\n", strings.TrimSpace(finding.Impact))
 		fmt.Fprintf(out, "**Suggestion:** %s\n\n", strings.TrimSpace(finding.Suggestion))
-		fmt.Fprintf(out, "Confidence: %d%%\n\n", finding.ConfidencePercent())
+		fmt.Fprintf(out, "Evidence strength: %s\n\n", finding.EvidenceStrength().Display())
 	}
 }
 

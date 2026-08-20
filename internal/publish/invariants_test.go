@@ -40,6 +40,7 @@ func TestOnlyOneRemoteWriteExists(t *testing.T) {
 		{`"push"`, "this tool never pushes"},
 		{`os.WriteFile`, "this tool never writes repository files"},
 		{`os.Create`, "this tool never writes repository files"},
+		{`os.OpenFile`, "the only file this tool creates is an opt-in prediction snapshot"},
 		{`/contents/`, "repository content endpoints must be read-only"},
 		{`/transitions`, "this tool never modifies Jira"},
 	}
@@ -47,6 +48,14 @@ func TestOnlyOneRemoteWriteExists(t *testing.T) {
 	// The one permitted write, and the read endpoints it depends on.
 	allowedPostPaths := map[string]bool{
 		"internal/github/review.go": true,
+	}
+
+	// The one permitted local write. Capture exists so review quality can be
+	// measured, and it is held to the same discipline as publication: a single
+	// allow-listed file, named here so a second writer has to be added
+	// deliberately rather than appearing as an implementation detail.
+	allowedFileWritePaths := map[string]bool{
+		"internal/evaluation/capture.go": true,
 	}
 
 	for _, path := range goSourceFiles(t, root) {
@@ -68,6 +77,9 @@ func TestOnlyOneRemoteWriteExists(t *testing.T) {
 			if !strings.Contains(source, f.pattern) {
 				continue
 			}
+			if f.pattern == "os.OpenFile" && allowedFileWritePaths[relative] {
+				continue
+			}
 			// A GET of a contents endpoint is how repository rules are read; only
 			// a write to one is forbidden.
 			if f.pattern == "/contents/" && readOnlyContents(source) {
@@ -79,6 +91,24 @@ func TestOnlyOneRemoteWriteExists(t *testing.T) {
 		if strings.Contains(source, "http.MethodPost") && !allowedPostPaths[relative] {
 			t.Errorf("%s issues an HTTP POST; the only permitted write is review publication in %v",
 				relative, keys(allowedPostPaths))
+		}
+	}
+}
+
+// TestCaptureNeverOverwrites states the property that makes the one local write
+// safe: capture creates a file or fails, so it can never destroy a label set, an
+// earlier snapshot, or any other file named by mistake.
+func TestCaptureNeverOverwrites(t *testing.T) {
+	source := readFile(t, filepath.Join(repoRoot(t), "internal/evaluation/capture.go"))
+
+	for _, required := range []string{"os.O_EXCL", "os.O_CREATE"} {
+		if !strings.Contains(source, required) {
+			t.Errorf("capture.go does not use %s; capture must never overwrite an existing file", required)
+		}
+	}
+	for _, forbidden := range []string{"os.O_TRUNC", "os.O_APPEND", "os.Remove", "os.Rename"} {
+		if strings.Contains(source, forbidden) {
+			t.Errorf("capture.go uses %s; capture may only create a new file", forbidden)
 		}
 	}
 }

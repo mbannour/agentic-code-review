@@ -73,7 +73,7 @@ func renderFinding(finding Finding) string {
 
 	writeSection(&out, "Suggestion", finding.Suggestion)
 
-	fmt.Fprintf(&out, "\nConfidence: %d%%\n", finding.ConfidencePercent())
+	fmt.Fprintf(&out, "\nEvidence strength: %s\n", finding.EvidenceStrength().Display())
 	return out.String()
 }
 

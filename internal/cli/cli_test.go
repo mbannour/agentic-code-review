@@ -925,7 +925,7 @@ func TestPrintClaudeOutcome(t *testing.T) {
 				"HIGH · COR-001",
 				"internal/payment/retry.go:84-87",
 				"Permanent declines enter the retry path",
-				"Confidence: 96%",
+				"Evidence strength: HIGH",
 			},
 			// The transport envelope is never printed.
 			notWant: []string{`{"type":"result"`, "session_id"},
@@ -1042,5 +1042,75 @@ func TestRunReviewClaudeUnavailableIsActionable(t *testing.T) {
 		if strings.Contains(err.Error(), unwanted) {
 			t.Errorf("error %q mentions %q; authentication is not this tool's concern", err, unwanted)
 		}
+	}
+}
+
+// TestCaptureRequiresClaude checks the flag combination is refused before any
+// network call. Capture records what the reviewer proposed, so without a reviewer
+// run there is nothing to record — and a flag that quietly produced no snapshot
+// would be indistinguishable from a case that found nothing.
+func TestCaptureRequiresClaude(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	path := filepath.Join(t.TempDir(), "run.json")
+
+	err := Run([]string{"review", "--pr", testPR, "--capture-predictions", path, "--capture-run", "run-1"})
+	if err == nil || !strings.Contains(err.Error(), "--capture-predictions requires --claude") {
+		t.Fatalf("Run() = %v, want the capture/--claude refusal", err)
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Error("a snapshot was created despite the refusal")
+	}
+}
+
+// A snapshot with no run name cannot be scored, so the omission is refused up
+// front rather than after a full review has been paid for.
+func TestCaptureRequiresARunName(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	path := filepath.Join(t.TempDir(), "run.json")
+
+	err := Run([]string{"review", "--pr", testPR, "--claude", "--capture-predictions", path})
+	if err == nil || !strings.Contains(err.Error(), "--capture-run is required") {
+		t.Fatalf("Run() = %v, want the missing run-name refusal", err)
+	}
+}
+
+// The capture metadata flags do nothing on their own; silently ignoring them
+// would let a mislabelled suite look like it was captured correctly.
+func TestCaptureMetadataFlagsRequireCapture(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+
+	for _, flagName := range []string{"--capture-case", "--capture-run"} {
+		err := Run([]string{"review", "--pr", testPR, "--claude", flagName, "value"})
+		if err == nil || !strings.Contains(err.Error(), "require --capture-predictions") {
+			t.Errorf("Run(%s) = %v, want the missing --capture-predictions refusal", flagName, err)
+		}
+	}
+}
+
+// The default case ID identifies the pull request under review, so a suite's case
+// IDs are stable without a lookup table.
+func TestCaptureCaseIDDefaultsToThePullRequest(t *testing.T) {
+	pr := github.PullRequest{Owner: "acme", Repo: "payments", Number: 123}
+
+	if got := captureCaseID("", pr); got != "acme/payments#123" {
+		t.Errorf("captureCaseID(\"\") = %q, want acme/payments#123", got)
+	}
+	if got := captureCaseID("  custom-case  ", pr); got != "custom-case" {
+		t.Errorf("captureCaseID(explicit) = %q, want custom-case", got)
+	}
+}
+
+// Capture is opt-in: nothing is written unless a path is given.
+func TestCaptureIsOptIn(t *testing.T) {
+	fs := flag.NewFlagSet("review", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.String("pr", "", "")
+	path := fs.String("capture-predictions", "", "")
+
+	if err := fs.Parse([]string{"--pr", testPR}); err != nil {
+		t.Fatalf("Parse() returned error: %v", err)
+	}
+	if *path != "" {
+		t.Error("--capture-predictions has a default path; capture must be opt-in")
 	}
 }

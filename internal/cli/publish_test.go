@@ -231,7 +231,7 @@ func TestDryRunShowsWhereEveryFindingWent(t *testing.T) {
 		"Summary findings:",
 		"ARCH-001", string(publish.ReasonNotDiffMappable),
 		"Suppressed:",
-		"TEST-001", string(publish.ReasonLowConfidence),
+		"TEST-001", string(publish.ReasonLowEvidenceStrength),
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("plan output does not contain %q\n---\n%s", want, out)
@@ -483,7 +483,7 @@ func TestPublishSummaryOnlyReview(t *testing.T) {
 		"None.",
 		"### Additional findings",
 		"MAINT-001",
-		"Confidence: 82%",
+		"Evidence strength: MEDIUM",
 		"Not available — local repository was not provided.",
 	} {
 		if !strings.Contains(sent.Body, want) {
