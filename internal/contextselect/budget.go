@@ -49,6 +49,77 @@ const (
 	MarkerTicketDescription = "[TRUNCATED: Jira description exceeded context limit]"
 )
 
+// Risk-tiered context ceilings.
+//
+// Context is the dominant cost of a review: everything selected is sent to a model,
+// and a token spent on a low-risk change is a token not available for a high-risk
+// one. So the ceiling follows the assessed risk rather than being constant.
+//
+// The tiers are generous rather than tight. Cutting context is the one optimization
+// that can silently make a review worse — a dropped patch is a defect nobody looks
+// for — so the low tier is still large enough to hold an ordinary change whole, and
+// the high tier is the full allowance.
+const (
+	LowRiskContextBudgetBytes    = 96 * 1024
+	MediumRiskContextBudgetBytes = 144 * 1024
+	HighRiskContextBudgetBytes   = DefaultContextBudgetBytes
+)
+
+// BudgetForRiskLevel returns the allowances for an assessed risk band.
+//
+// The band arrives as the plain string the risk stage produced; an unrecognized
+// value gets the full budget, because failing to recognize a risk band is not a
+// reason to review a change with less context.
+func BudgetForRiskLevel(level string) Budget {
+	switch level {
+	case "minimal", "low":
+		return DefaultBudget().ScaledTo(LowRiskContextBudgetBytes)
+	case "medium":
+		return DefaultBudget().ScaledTo(MediumRiskContextBudgetBytes)
+	default:
+		return DefaultBudget()
+	}
+}
+
+// ScaledTo returns the budget with every allowance scaled to a new total.
+//
+// Sub-allowances are scaled proportionally rather than clamped, because clamping
+// would leave the fixed sections at full size and take the whole reduction out of
+// the patches — starving the change itself, which is the one thing a review cannot
+// do without. Each floor keeps a section useful rather than vestigial.
+func (b Budget) ScaledTo(total int) Budget {
+	base := b.normalized()
+	if total <= 0 || total >= base.Total {
+		return base
+	}
+
+	scale := func(value, floor int) int {
+		scaled := value * total / base.Total
+		if scaled < floor {
+			return floor
+		}
+		return scaled
+	}
+
+	return Budget{
+		Total:             total,
+		Rules:             scale(base.Rules, 8*1024),
+		Analysis:          scale(base.Analysis, 8*1024),
+		Evidence:          scale(base.Evidence, 8*1024),
+		Retrieval:         scale(base.Retrieval, 4*1024),
+		Discussion:        scale(base.Discussion, 4*1024),
+		TicketDescription: scale(base.TicketDescription, 4*1024),
+		PerCheckOutput:    scale(base.PerCheckOutput, 2*1024),
+	}.normalized()
+}
+
+// EstimatedTokens is a rough token count for a byte size.
+//
+// Four bytes per token is the usual approximation for source code and English
+// prose. It is stated as an estimate and used only for reporting: nothing decides
+// anything from it, so being approximate costs nothing.
+func EstimatedTokens(bytes int) int { return bytes / 4 }
+
 // Budget holds the byte allowances for one selection.
 type Budget struct {
 	// Total is the ceiling on all selected content.

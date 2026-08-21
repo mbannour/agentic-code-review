@@ -266,3 +266,36 @@ func TestFileWithoutAPatchStillClassifiesByPath(t *testing.T) {
 		t.Errorf("areas = %v, want payments from the path alone", profile.Areas)
 	}
 }
+
+// Breadth raises the band on its own, which is what makes a reduced context
+// ceiling safe: the low tier can only ever apply to a change small enough that the
+// ceiling never binds. A wide change is at least medium however mundane its content.
+func TestBreadthAlonePreventsTheLowestTier(t *testing.T) {
+	var changes []Change
+	for i := 0; i < broadChangeFiles; i++ {
+		changes = append(changes, Change{
+			Path:      "internal/format/file" + string(rune('a'+i%26)) + ".go",
+			Patch:     patch("+	return strings.TrimSpace(s)"),
+			Additions: 3,
+		})
+	}
+
+	profile := NewAnalyzer().Analyze(changes)
+	if profile.Level == LevelLow || profile.Level == LevelMinimal {
+		t.Errorf("level = %s for a %d-file change; breadth must raise the band",
+			profile.Level, len(changes))
+	}
+}
+
+// The same holds for line count rather than file count.
+func TestManyChangedLinesRaiseTheBand(t *testing.T) {
+	profile := NewAnalyzer().Analyze([]Change{{
+		Path: "internal/format/format.go", Patch: patch("+	return s"),
+		Additions: broadChangeLines, Deletions: 0,
+	}})
+
+	if !profile.Level.AtLeast(LevelMedium) {
+		t.Errorf("level = %s for %d changed lines, want at least medium",
+			profile.Level, broadChangeLines)
+	}
+}

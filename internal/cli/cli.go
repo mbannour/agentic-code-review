@@ -317,8 +317,13 @@ func runReview(args []string) error {
 		retrieved = retrieval.Result{Skipped: true, Reason: "--retrieve not provided"}
 	}
 
+	// The context ceiling follows the assessed risk. Everything selected is sent to
+	// a model, so a token spent on a low-risk change is one unavailable to a
+	// high-risk one.
+	budget := contextselect.BudgetForRiskLevel(string(riskProfile.Level))
+
 	// Reduce the search space before any later stage sees it.
-	selected, err := contextselect.NewSelector().
+	selected, err := contextselect.NewSelectorWithBudget(budget).
 		SelectWithRetrieval(ctx, reviewCtx, analysisResult, profile, retrieved)
 	if err != nil {
 		return fmt.Errorf("context selection: %w", err)
@@ -334,6 +339,15 @@ func runReview(args []string) error {
 	// being asked.
 	if !*useClaude {
 		printClaudeSkipped("--claude not provided")
+		return nil
+	}
+
+	// Routing decides whether a model is worth invoking at all. A change with no
+	// production code and no tests — documentation, a licence, a lock file alone —
+	// selects no perspective, and a reviewer asked to look at it has nothing to look
+	// for. Paying for that call was the cheapest waste in the pipeline.
+	if len(routing.Selected) == 0 {
+		printClaudeSkipped("no review perspective applies to this change")
 		return nil
 	}
 
@@ -905,7 +919,8 @@ func printSelection(selected contextselect.SelectedContext) {
 	fmt.Println("Context size:")
 	fmt.Printf("  Original: %s\n", formatBytes(stats.OriginalBytes))
 	fmt.Printf("  Selected: %s\n", formatBytes(stats.SelectedBytes))
-	fmt.Printf("  Budget:   %s\n", formatBytes(stats.BudgetBytes))
+	fmt.Printf("  Budget:   %s (risk-tiered)\n", formatBytes(stats.BudgetBytes))
+	fmt.Printf("  Estimated input: ~%d tokens\n", contextselect.EstimatedTokens(stats.SelectedBytes))
 
 	if stats.Truncated {
 		fmt.Println()

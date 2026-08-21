@@ -186,7 +186,10 @@ func Registry() []Specialist {
 				changerisk.AreaStateMachine, changerisk.AreaMigration,
 				changerisk.AreaPublicAPI,
 			},
-			MinimumLevel: changerisk.LevelMedium,
+			// Low rather than medium, because a change touching only tests lands at
+			// low risk and is exactly where a weakened assertion hides. Without this
+			// the one perspective that could catch it would never be selected.
+			MinimumLevel: changerisk.LevelLow,
 		},
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/your-company/agentic-code-review/internal/analysis"
+	"github.com/your-company/agentic-code-review/internal/changerisk"
 	"github.com/your-company/agentic-code-review/internal/claude"
 	"github.com/your-company/agentic-code-review/internal/contextselect"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/your-company/agentic-code-review/internal/reporules"
 	"github.com/your-company/agentic-code-review/internal/retrieval"
 	"github.com/your-company/agentic-code-review/internal/review"
+	"github.com/your-company/agentic-code-review/internal/specialist"
 )
 
 // captureStdout runs fn with os.Stdout redirected and returns what it wrote.
@@ -1174,5 +1176,78 @@ func TestPrintRetrievalListsRegions(t *testing.T) {
 		if !strings.Contains(output, want) {
 			t.Errorf("output missing %q:\n%s", want, output)
 		}
+	}
+}
+
+// A change with no perspective to review it has nothing for a model to look for,
+// and paying for that call was the cheapest waste in the pipeline. The skip must
+// be stated, not silent.
+func TestPrintClaudeSkippedStatesNoApplicablePerspective(t *testing.T) {
+	out := captureStdout(t, func() {
+		printClaudeSkipped("no review perspective applies to this change")
+	})
+
+	if !strings.Contains(out, "no review perspective applies") {
+		t.Errorf("output does not explain the skip:\n%s", out)
+	}
+}
+
+// The saving must never apply to a change containing production code: the router
+// selects the correctness perspective for any such change, so the skip cannot fire.
+func TestEveryProductionChangeSelectsAPerspective(t *testing.T) {
+	cases := map[string][]changerisk.Change{
+		"go source": {{Path: "internal/app/app.go", Patch: "@@ -1 +1,2 @@\n+\tcall()\n", Additions: 1}},
+		"scala source": {{Path: "src/main/scala/app/App.scala",
+			Patch: "@@ -1 +1,2 @@\n+  def run = 1\n", Additions: 1}},
+		"tests only": {{Path: "internal/app/app_test.go",
+			Patch: "@@ -1 +1,2 @@\n+func TestThing(t *testing.T) {}\n", Additions: 1}},
+		"migration only": {{Path: "db/migrations/0007.sql",
+			Patch: "@@ -1 +1,2 @@\n+ALTER TABLE payments ADD COLUMN status text;\n", Additions: 1}},
+	}
+
+	for name, changes := range cases {
+		t.Run(name, func(t *testing.T) {
+			profile := changerisk.NewAnalyzer().Analyze(changes)
+			plan := specialist.NewRouter().Route(profile)
+
+			if len(plan.Selected) == 0 {
+				t.Errorf("no perspective selected for %s; the review would be skipped", name)
+			}
+		})
+	}
+}
+
+// Only changes with nothing reviewable in them skip the model.
+func TestNonCodeChangesSelectNoPerspective(t *testing.T) {
+	profile := changerisk.NewAnalyzer().Analyze([]changerisk.Change{
+		{Path: "README.md", Patch: "@@ -1 +1,2 @@\n+prose\n", Additions: 1},
+		{Path: "LICENSE", Patch: "@@ -1 +1,2 @@\n+text\n", Additions: 1},
+	})
+
+	if plan := specialist.NewRouter().Route(profile); len(plan.Selected) != 0 {
+		t.Errorf("selected %v for a documentation-only change", plan.IDs())
+	}
+}
+
+// The context ceiling follows the risk band, and a high-risk change keeps the full
+// allowance: the optimization must not reduce context where it matters most.
+func TestContextBudgetFollowsRisk(t *testing.T) {
+	high := changerisk.NewAnalyzer().Analyze([]changerisk.Change{
+		{Path: "internal/payments/capture.go", Patch: "@@ -1 +1,2 @@\n+\tcapture(amount)\n", Additions: 400},
+		{Path: "internal/auth/token.go", Patch: "@@ -1 +1,2 @@\n+\tverify(token)\n", Additions: 400},
+	})
+	low := changerisk.NewAnalyzer().Analyze([]changerisk.Change{
+		{Path: "internal/format/format.go", Patch: "@@ -1 +1,2 @@\n+\treturn s\n", Additions: 2},
+	})
+
+	highBudget := contextselect.BudgetForRiskLevel(string(high.Level))
+	lowBudget := contextselect.BudgetForRiskLevel(string(low.Level))
+
+	if highBudget.Total != contextselect.DefaultContextBudgetBytes {
+		t.Errorf("high-risk budget = %d, want the full %d",
+			highBudget.Total, contextselect.DefaultContextBudgetBytes)
+	}
+	if lowBudget.Total >= highBudget.Total {
+		t.Errorf("low-risk budget %d is not below the high-risk %d", lowBudget.Total, highBudget.Total)
 	}
 }

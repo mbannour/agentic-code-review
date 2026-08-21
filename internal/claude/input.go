@@ -38,6 +38,17 @@ func NewInputBuilder() InputBuilder { return InputBuilder{} }
 func (b InputBuilder) Build(selected contextselect.SelectedContext) (ReviewInput, error) {
 	var out strings.Builder
 
+	// Order is deliberate, and the split is between shared and specific.
+	//
+	// Everything from the instructions through the retrieved code is the same for
+	// any perspective reviewing this change: it depends only on the pull request.
+	// Everything after it — what to look for, and the answer format — is what would
+	// differ between one reviewer and another.
+	//
+	// Keeping that boundary means the shared part is a stable prefix. Today that
+	// costs nothing and buys readability; once more than one perspective reviews the
+	// same change, it is the difference between sending this context once and
+	// sending it five times.
 	writeInstructions(&out)
 	writePullRequest(&out, selected)
 	writeDiscussion(&out, selected)
@@ -45,11 +56,13 @@ func (b InputBuilder) Build(selected contextselect.SelectedContext) (ReviewInput
 	writeRules(&out, selected)
 	writeExternalEvidence(&out, selected)
 	writeProfile(&out, selected)
-	writeReviewFocus(&out, selected)
-	writeCriteria(&out, selected)
 	writeAnalysis(&out, selected)
 	writeChangedFiles(&out, selected)
 	writeRelatedCode(&out, selected)
+
+	// Perspective-specific from here down.
+	writeReviewFocus(&out, selected)
+	writeCriteria(&out, selected)
 	writeResponseContract(&out)
 
 	content := out.String()
