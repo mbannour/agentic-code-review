@@ -562,10 +562,19 @@ is expected and supported.
 
 Only the manifests listed above are ever read. A small coordinate table maps
 dependencies onto labels the review can use — `cats`, `circe`, `slick`, `doobie`,
-`scalatest`, `play`, `akka`, `pekko`, `zio`, `sql`, `gorm`, `grpc`, `gin`, `chi`,
-`opentelemetry`, `kubernetes`, `next.js`, `react`, `vitest`, `playwright`,
-`redux-toolkit`, `mui`, and `i18next` — and nothing more; it is a hint for review
-guidance, not a package database.
+`scalatest`, `play`, `akka`, `pekko`, `zio`, `cats-effect`, `sql`, `gorm`, `grpc`,
+`gin`, `chi`, `opentelemetry`, `kubernetes`, `next.js`, `react`, `vitest`,
+`playwright`, `redux-toolkit`, `mui`, and `i18next` — and nothing more; it is a hint
+for review guidance, not a package database.
+
+The Scala **major version** is detected too, from a `scalaVersion` or
+`crossScalaVersions` declaration in `build.sbt`, and carried as `scala-2` or
+`scala-3`. It travels as a hint like any other because it decides nothing — but it
+changes the language rather than the library set, and guidance written for one version
+is wrong for the other. Only the declaration is read: a build file is full of library
+versions, and matching those would report whichever dependency happens to be newest.
+A cross-built project declares both and receives both, since guidance for a version
+the project still compiles is not wrong.
 
 Adding a language means adding its signals and its toolchain to
 `internal/technology` and `internal/analysis`. Nothing in the review pipeline changes.
@@ -803,8 +812,19 @@ Jira. Invocations are bounded by a 5-minute timeout and a 2 MB output limit.
 
 The prompt carries language-specific guidance for what was actually detected — Go,
 Scala, JavaScript, and TypeScript semantics; build guidance for sbt or npm; and focused
-criteria for detected technologies such as Next.js, React, Vitest, Playwright, Redux
-Toolkit, and i18next. Every section is prefaced by the rule that matters most:
+criteria for detected technologies.
+
+For the Scala side that means ZIO (effects built but never run, fiber lifecycle,
+interruption safety, `ZIO.blocking`, `ZLayer` wiring, bounded `foreachPar`, `TestClock`
+coverage), Cats (`Validated` versus `Either`, unbounded `traverse`, lawless `Semigroup`
+instances, transformer-stack ordering), Cats Effect (discarded `IO`, `Resource` pairing
+under cancellation, `unsafeRunSync` outside an entry point), and the language version
+itself — Scala 2 gets implicit-resolution and exhaustivity concerns, Scala 3 gets
+`given`/`using` scope, extension-method conflicts, opaque-type leaks, `Matchable`, and
+inline/macro cost. A version's guidance is offered only to a project built with it,
+because an idiom correct for one is wrong for the other.
+
+Every section is prefaced by the rule that matters most:
 
 > Do not report a finding merely because a Scala best practice exists. There must be a
 > concrete defect, regression risk, or material maintainability issue introduced or

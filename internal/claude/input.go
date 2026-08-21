@@ -698,6 +698,70 @@ var npmBuildCriteria = []string{
 // when that technology is present. A detected label with no entry is still named,
 // without invented advice.
 var technologyCriteria = map[string][]string{
+	// ZIO. The concerns worth naming are the ones a diff can hide: an effect that
+	// is built but never run reads exactly like one that runs, and a fiber leak or
+	// a lost interruption looks like ordinary code until production.
+	"zio": {
+		"effects constructed but never run: a ZIO value discarded, or an effect returned where it should be composed",
+		"ZIO.attempt versus ZIO.succeed for code that can throw, and side effects hidden inside succeed",
+		"fiber lifecycle: fork without join or interruption, and fibers outliving the scope that created them",
+		"interruption safety: uninterruptible regions, acquireRelease pairing, and cleanup that must survive interruption",
+		"resource handling through Scope or ZIO.acquireRelease rather than manual open and close",
+		"error channel modelling: typed errors widened to Throwable, orDie on a recoverable failure, and errors swallowed by ignore or catchAll",
+		"retries and schedules: unbounded retry, retry of a non-idempotent effect, and missing timeout or backoff",
+		"blocking work on the default executor rather than ZIO.blocking or ZIO.attemptBlocking",
+		"ZLayer wiring: layers built per request rather than once, memoization assumptions, and dependency cycles",
+		"concurrency operators: foreachPar and mapPar without a bound, race semantics, and what happens to the loser",
+		"Ref, Promise, and Queue usage: lost updates, unbounded queues, and modify used where update is not atomic enough",
+		"test coverage using TestClock and TestRandom for time- and randomness-dependent behavior",
+	},
+
+	// Cats. The type classes themselves are rarely the risk; the risk is what a
+	// change does with the effect type and the traversal.
+	"cats": {
+		"Validated versus Either where the change decides whether errors accumulate or short-circuit",
+		"traverse and sequence over an unbounded collection, and the allocation that implies",
+		"foldLeft on a large or lazy structure where the strictness changes behavior",
+		"Semigroup and Monoid instances whose combine is not associative, or whose empty is not an identity",
+		"orphan or ambiguous instances introduced by a new import",
+		"NonEmptyList and NonEmptyChain guarantees discarded by converting to a plain List",
+		"OptionT, EitherT, and Kleisli stacks where the order of the transformers changes the semantics",
+	},
+
+	// Cats Effect. Separate from cats because the failure modes are runtime ones.
+	"cats-effect": {
+		"IO values discarded rather than composed, so the effect never runs",
+		"Resource acquisition and release pairing, including on cancellation",
+		"cancellation safety: uncancelable regions, bracket usage, and finalizers that must run",
+		"blocking work without IO.blocking, and work moved off the compute pool",
+		"parTraverse and parSequence without a bound on concurrency",
+		"Ref and Deferred usage: lost updates and races on shared state",
+		"unsafeRunSync or unsafeRunAsync appearing outside a program's entry point",
+		"timeouts on effects that reach the network or a database",
+	},
+
+	// Scala 2 and Scala 3 are language versions rather than libraries, and they are
+	// listed here because that is where per-technology guidance lives. Each names
+	// only what differs: idioms correct for one version are wrong for the other, and
+	// a reviewer that suggests the wrong one is worse than one that says nothing.
+	"scala-2": {
+		"implicit resolution and ambiguity, and implicit conversions that change behavior silently",
+		"pattern-match exhaustivity, which the compiler checks less strictly than in Scala 3",
+		"case-class copy and apply visibility assumptions that Scala 3 tightens",
+		"procedure syntax, auto-application, and other constructs whose meaning changes on migration",
+		"compiler options: -Xfatal-warnings and -Wconf settings weakened or bypassed",
+	},
+	"scala-3": {
+		"given and using clauses: ambiguity, and givens whose scope is wider than intended",
+		"extension methods that shadow or conflict with existing members",
+		"enum and sealed-trait exhaustivity as variants are added, including across modules",
+		"opaque types whose abstraction is broken by a new accessor or conversion",
+		"explicit nulls and Matchable where the change crosses into Java interop",
+		"inline and macro definitions: what is evaluated at compile time, and the code size that results",
+		"top-level definitions and export clauses changing a module's public surface",
+		"union and intersection types where a wider type admits a value the code cannot handle",
+	},
+
 	"sql": {
 		"Rows.Close and Rows.Err on every query path",
 		"transaction rollback and commit on both success and error paths",

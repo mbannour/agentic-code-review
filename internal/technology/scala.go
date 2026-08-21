@@ -2,6 +2,8 @@ package technology
 
 import (
 	"path"
+	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -34,6 +36,53 @@ func scalaLibrarySignals() []librarySignal {
 		{coordinate: "org.scalatest", label: "scalatest"},
 		{coordinate: "org.mongodb.scala", label: "mongo-scala"},
 	}
+}
+
+// scalaVersionPattern matches a Scala version declared in a build file, whether by
+// scalaVersion or crossScalaVersions.
+//
+// It reads the declaration rather than any version-looking string, because a build
+// file is full of library versions and matching those would report whatever the
+// newest dependency happens to be.
+var scalaVersionPattern = regexp.MustCompile(`(?m)(?:scalaVersion|crossScalaVersions)\s*:?\+?=\s*(?:Seq\s*\()?([^\n)]*)`)
+
+// scalaVersionLiteral matches the quoted versions inside such a declaration.
+var scalaVersionLiteral = regexp.MustCompile(`"(\d+)\.(\d+)[^"]*"`)
+
+// scalaVersionLabels reports the Scala major versions a build file declares, as the
+// labels "scala-2" and "scala-3".
+//
+// The major version is worth detecting because it changes the language rather than
+// the library set: implicits become givens, exhaustivity is stricter, and half the
+// idioms a reviewer would suggest for one are wrong for the other. A cross-built
+// project declares both, and both are reported — guidance for a version the project
+// still compiles is not wrong.
+//
+// The labels travel as library hints because that is what the profile carries: free-
+// form strings that steer review guidance and decide nothing.
+func scalaVersionLabels(content string) []string {
+	if strings.TrimSpace(content) == "" {
+		return nil
+	}
+
+	set := map[string]bool{}
+	for _, declaration := range scalaVersionPattern.FindAllStringSubmatch(content, -1) {
+		for _, version := range scalaVersionLiteral.FindAllStringSubmatch(declaration[1], -1) {
+			switch version[1] {
+			case "2":
+				set["scala-2"] = true
+			case "3":
+				set["scala-3"] = true
+			}
+		}
+	}
+
+	labels := make([]string, 0, len(set))
+	for label := range set {
+		labels = append(labels, label)
+	}
+	sort.Strings(labels)
+	return labels
 }
 
 // scalaTestSuffixes are the conventional endings of a Scala test file. Both the

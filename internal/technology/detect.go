@@ -295,6 +295,11 @@ func librariesFromContent(content string) []string {
 			set[signal.label] = true
 		}
 	}
+	// The Scala major version is a language fact, not a dependency, but it travels
+	// as a hint like any other: it decides nothing and steers guidance.
+	for _, label := range scalaVersionLabels(content) {
+		set[label] = true
+	}
 	return sortedStrings(set)
 }
 
