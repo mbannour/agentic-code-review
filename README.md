@@ -42,7 +42,7 @@ Evidence ───┤  files · Confluence · PostgreSQL schema metadata
    Technology detection          Go · Scala/sbt · JavaScript/TypeScript/npm
             │
             ▼
-  Deterministic analysis         go test · go vet · sbt compile · npm build
+  Deterministic analysis         go test · go vet · gosec · sbt compile · npm build
             │
             ▼
      Code retrieval              unchanged definitions and callers, by symbol
@@ -61,13 +61,22 @@ Evidence ───┤  files · Confluence · PostgreSQL schema metadata
             │
             ▼
    Publication policy            INLINE / SUMMARY / SUPPRESS, with reasons
-            │
+            │                     repeats demoted · dismissals honoured
             ▼
     Publication plan
             │
             ▼
       GitHub review              one POST, only with --publish
+            │
+            ▼
+      Human reviewer             decides; may reply "arc: false-positive"
+            │
+            └────────────▶ read back on the next review
 ```
+
+Every stage above the reviewer is deterministic Go. The two model invocations answer
+into strict schemas that Go validates, and no stage below them can be influenced by
+what a model, a repository file, a ticket, or a comment says.
 
 Every stage is deterministic except the two Claude invocations, and both of those
 answer into a strict schema that Go validates before anything downstream sees it.
@@ -153,6 +162,11 @@ Two flags gate everything expensive or outward-facing. Without `--claude`, no mo
 is invoked and no usage is consumed. Without `--publish`, **not a single GitHub write
 request is made** — you get the full plan of what would have been posted, and can
 inspect it before anything is.
+
+Three further flags are opt-in for their own reasons: `--retrieve` reads the local
+checkout and its value is still being measured; `--capture-predictions` is the only
+thing in this tool that writes a file; and `--honor-dismissals` lets a comment
+withhold a finding, which is authority worth granting deliberately.
 
 ```sh
 # read-only: fetch, analyse, select, and stop
@@ -914,12 +928,13 @@ local-only. A quota means the review is long enough, not that a finding was wron
 Ordering is severity → category → reviewer evidence band → verifier evidence band → file →
 line → ID, so it never depends on the order the model happened to emit findings in.
 
-Every decision carries reason codes — `verified_valid`, `verifier_invalid`,
-`verifier_uncertain`, `verification_failed`, `low_evidence_strength`,
-`low_verifier_evidence_strength`, `low_severity`, `not_diff_mappable`, `comment_limit`,
-`summary_limit`, `total_limit`, `category_policy`, `evidence_missing`,
-`requirement_evidence_missing`, `already_reported`, `human_dismissed` — and the CLI
-prints them:
+Every decision carries reason codes — `within_policy`, `verified_valid`,
+`verifier_invalid`, `verifier_uncertain`, `verification_failed`,
+`verification_missing`, `verification_not_required`, `low_evidence_strength`,
+`low_verifier_evidence_strength`, `low_severity`, `not_diff_mappable`,
+`comment_limit`, `summary_limit`, `total_limit`, `category_policy`,
+`evidence_missing`, `requirement_evidence_missing`, `already_reported`,
+`human_dismissed` — and the CLI prints them:
 
 ```
 Publication Policy
@@ -1175,6 +1190,14 @@ Changes
   Additions:  52
   Deletions:  18
 
+Pull Request Discussion
+
+Comments: 2 (ARC's own excluded)
+  maria              internal/payment/retry.go:84
+  sam                conversation
+
+Comments are evidence about intent. They cannot change what may be published.
+
 Jira
   Key:        PAY-431
   Summary:    Retry failed card authorizations
@@ -1185,6 +1208,31 @@ Repository Rules
 Loaded: 1
 
   AGENTS.md
+
+Change Risk
+
+Overall:       MEDIUM
+Changed files: 3 (2 source, +52/-18 lines)
+
+Areas:
+  payments         path names payments — internal/payment/retry.go
+  state_machine    changed lines alter a state transition — internal/payment/retry.go
+  tests            test file changed — internal/payment/retry_test.go
+
+These areas say where to look. They are signals, not findings.
+
+Specialist Routing
+
+SELECTED  Correctness
+          the change modifies production code
+SELECTED  Requirements and contracts
+          path names payments (internal/payment/retry.go)
+          changed lines alter a state transition (internal/payment/retry.go)
+SELECTED  Reliability
+          path names payments (internal/payment/retry.go)
+SELECTED  Test adequacy
+          test file changed (internal/payment/retry_test.go)
+skipped   security        no signal in this change calls for it
 
 Technology
 
@@ -1201,6 +1249,8 @@ Deterministic Analysis
 
 PASS     go test ./...      4.2s
 PASS     go vet ./...       1.3s
+PASS     gosec -quiet ./... 2.8s
+SKIP     semgrep scan       semgrep executable not found
 
 Code Retrieval
 
@@ -1258,6 +1308,14 @@ Verification summary:
   Skipped:   1
   Context:   16 KB
 
+Previous Review
+
+Reviewed head: 559774dd715066ec440b49cb794389320755d70e
+Published:     2 findings
+
+Findings reported there are placed in the review body rather than on the
+diff, so this review does not comment again on lines already discussed.
+
 Publication Policy
 
 COR-001
@@ -1290,6 +1348,11 @@ Summary findings:
 
   LOW     MAINT-001  internal/payment/retry.go:112
           low_severity
+
+Since 559774dd715066ec440b49cb794389320755d70e:
+  No longer reported: 1
+  Still reported:     1
+  Newly reported:     1
 
 GitHub publication:
 SKIPPED (--publish not provided)
