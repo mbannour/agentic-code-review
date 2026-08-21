@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -78,6 +79,12 @@ func runReview(args []string) error {
 		"evidence-config",
 		"",
 		"versioned JSON configuration for read-only external evidence connectors",
+	)
+
+	honorDismissals := fs.Bool(
+		"honor-dismissals",
+		false,
+		"let \"arc: false-positive\" or \"arc: wont-fix\" replies on this pull request withhold findings",
 	)
 
 	retrieve := fs.Bool(
@@ -331,14 +338,16 @@ func runReview(args []string) error {
 	}
 
 	return runClaudeReview(ctx, claudeStage{
-		api:          client,
-		pullRequest:  pr,
-		reviewedSHA:  details.HeadSHA,
-		changedFiles: files,
-		selected:     selected,
-		repoDir:      *repoDir,
-		publish:      *doPublish,
-		jiraKey:      ticketKeyString(ticketFound, ticketKey),
+		api:             client,
+		pullRequest:     pr,
+		reviewedSHA:     details.HeadSHA,
+		changedFiles:    files,
+		selected:        selected,
+		repoDir:         *repoDir,
+		publish:         *doPublish,
+		jiraKey:         ticketKeyString(ticketFound, ticketKey),
+		honorDismissals: *honorDismissals,
+		comments:        comments,
 		capture: capture{
 			path:    *capturePredictions,
 			runName: *captureRun,
@@ -371,7 +380,15 @@ type claudeStage struct {
 	repoDir      string
 	publish      bool
 	jiraKey      string
-	capture      capture
+
+	// honorDismissals lets human verdicts written on this pull request withhold
+	// findings. It is opt-in because anyone who can comment can write one.
+	honorDismissals bool
+
+	// comments is the pull request's discussion, reused for reading verdicts.
+	comments []github.Comment
+
+	capture capture
 }
 
 // capture is where a run's validated findings are recorded for later scoring.
@@ -442,6 +459,14 @@ func runClaudeReview(ctx context.Context, stage claudeStage) error {
 		printHistoryUnavailable(err)
 		history = publish.History{}
 	}
+	// Human verdicts are read from the same comments the reviewer saw, and applied
+	// only when the operator asked for it.
+	if stage.honorDismissals {
+		dismissals := publish.DismissalsFrom(stage.comments)
+		history = history.WithDismissals(dismissals)
+		printDismissals(dismissals)
+	}
+
 	printHistory(history)
 
 	mapper := publish.NewMapperFromChangedFiles(stage.changedFiles)
@@ -515,6 +540,38 @@ func printHistoryUnavailable(err error) {
 	fmt.Println()
 	fmt.Printf("  unavailable: %v\n", err)
 	fmt.Println("  every finding is treated as newly reported")
+}
+
+// printDismissals reports the human verdicts that will be honoured.
+//
+// A withheld finding nobody can see is indistinguishable from one that was never
+// found, so every dismissal is named with its author before it takes effect.
+func printDismissals(dismissals map[string]publish.Dismissal) {
+	fmt.Println()
+	fmt.Println("Human Dismissals")
+	fmt.Println()
+
+	if len(dismissals) == 0 {
+		fmt.Println("  none found on this pull request")
+		fmt.Println("  write \"arc: false-positive\" or \"arc: wont-fix\" as a reply on the")
+		fmt.Println("  comment ARC left, to withhold that finding from later reviews")
+		return
+	}
+
+	// Sorted, so two runs over the same pull request print the same lines.
+	fingerprints := make([]string, 0, len(dismissals))
+	for fingerprint := range dismissals {
+		fingerprints = append(fingerprints, fingerprint)
+	}
+	sort.Strings(fingerprints)
+
+	for _, fingerprint := range fingerprints {
+		dismissal := dismissals[fingerprint]
+		fmt.Printf("  %-12s %-16s by %s at %s\n",
+			fingerprint, dismissal.Kind.Display(), dismissal.Author, dismissal.Location)
+	}
+	fmt.Println()
+	fmt.Println("Blocker and security findings are still reported in the review body.")
 }
 
 // printDelta reports how the plan compares with the previous review.
@@ -1447,6 +1504,7 @@ Options:
   --repo-dir   local checkout to run deterministic checks against (optional)
   --evidence-config versioned connector configuration for external review evidence (optional)
   --retrieve   retrieve unchanged code related to the change (requires --repo-dir)
+  --honor-dismissals  let "arc: false-positive" / "arc: wont-fix" replies withhold findings
   --capture-predictions  write this run's validated findings to a new snapshot (optional)
   --capture-run          run name recorded in the snapshot (required with capture)
   --capture-case         evaluation case ID (default: owner/repo#number)

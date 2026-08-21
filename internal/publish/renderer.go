@@ -62,19 +62,26 @@ func NewRenderer() Renderer { return Renderer{} }
 // impact, suggestion, and evidence strength — is never shortened away, because those are what
 // make the comment actionable.
 func (r Renderer) InlineComment(finding findings.Finding) string {
+	// The hidden marker is what lets a human reply be matched back to this exact
+	// finding on a later run. It is appended after the size check for the same
+	// reason the review body's markers are: a comment that lost its identity
+	// cannot be answered, and would be published again from scratch.
+	marker := "\n" + RenderFingerprintMarker(finding) + "\n"
+	budget := MaxInlineCommentBytes - len(marker)
+
 	for _, level := range []evidenceDetail{
 		evidenceFull, evidenceShortDetails, evidenceSourcesOnly, evidenceFewest, evidenceNone,
 	} {
 		body := renderComment(finding, level)
-		if len(body) <= MaxInlineCommentBytes {
-			return body
+		if len(body) <= budget {
+			return body + marker
 		}
 	}
 
 	// Unreachable for a validated finding: the field limits in internal/findings bound
 	// the preserved sections well below this ceiling. The clamp exists so an oversized
 	// body can never be sent, whatever changes upstream.
-	return clamp(renderComment(finding, evidenceNone), MaxInlineCommentBytes)
+	return clamp(renderComment(finding, evidenceNone), budget) + marker
 }
 
 // evidenceDetail is how much of a finding's evidence a rendering includes.

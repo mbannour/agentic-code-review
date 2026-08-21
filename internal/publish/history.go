@@ -137,7 +137,24 @@ type History struct {
 
 	// Reported are the fingerprints that review published.
 	Reported []string
+
+	// Dismissals are human verdicts on published findings, keyed by fingerprint.
+	// They are honoured only when the caller opts in; see WithDismissals.
+	Dismissals map[string]Dismissal
 }
+
+// WithDismissals returns the history with human verdicts attached.
+//
+// It is a separate step from loading the history because honouring a dismissal is
+// a decision an operator makes, not a default: anyone able to comment on a pull
+// request can write one.
+func (h History) WithDismissals(dismissals map[string]Dismissal) History {
+	h.Dismissals = dismissals
+	return h
+}
+
+// DismissalCount is how many findings carry a human verdict.
+func (h History) DismissalCount() int { return len(h.Dismissals) }
 
 // Reports whether the previous review published this finding.
 func (h History) Reports(finding findings.Finding) bool {

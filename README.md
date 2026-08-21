@@ -134,6 +134,7 @@ arc evaluate --labels <labels.json> --predictions <file-or-dir> [--format markdo
 | `--repo-dir` | no | — | Local checkout to run the project's build and test tooling against |
 | `--evidence-config` | no | — | Versioned JSON configuration for read-only external evidence connectors |
 | `--retrieve` | no | off | Retrieve unchanged repository code related to the change. Requires `--repo-dir`. |
+| `--honor-dismissals` | no | off | Let `arc: false-positive` / `arc: wont-fix` replies withhold findings from later reviews |
 | `--capture-predictions` | no | — | Write this run's validated findings to a new prediction snapshot. Requires `--claude`. |
 | `--capture-run` | with capture | — | Run name recorded in the snapshot |
 | `--capture-case` | no | `owner/repo#number` | Evaluation case ID this run is captured under |
@@ -917,7 +918,8 @@ Every decision carries reason codes — `verified_valid`, `verifier_invalid`,
 `verifier_uncertain`, `verification_failed`, `low_evidence_strength`,
 `low_verifier_evidence_strength`, `low_severity`, `not_diff_mappable`, `comment_limit`,
 `summary_limit`, `total_limit`, `category_policy`, `evidence_missing`,
-`requirement_evidence_missing`, `already_reported` — and the CLI prints them:
+`requirement_evidence_missing`, `already_reported`, `human_dismissed` — and the CLI
+prints them:
 
 ```
 Publication Policy
@@ -1012,6 +1014,60 @@ the review list is the same: every finding is treated as newly reported.
 
 Recovering this needs no extra GitHub endpoint. The fingerprints travel in the body ARC
 itself wrote, so the read surface stays two reads and one write.
+
+#### Dismissing a finding
+
+Reading the conversation lets ARC weigh what a maintainer said. It does not let
+anyone record a verdict. With `--honor-dismissals`, they can.
+
+Every inline comment ARC publishes carries a hidden marker:
+
+```html
+<!-- arc-finding:v1 3f2a1c8e9b04 -->
+```
+
+A reply on that same line, addressed to ARC, is a verdict:
+
+```text
+arc: false-positive — the gateway already de-duplicates by idempotency key.
+arc: wont-fix — accepted risk, tracked in OEM-3011.
+```
+
+The prefix is required, and that is the point: *"I think this is a false positive,
+what do you reckon?"* is two people talking about a finding, while `arc:
+false-positive` is a person instructing this tool. Only the second withholds
+anything, so ordinary review conversation cannot silence findings by accident.
+
+Matching is positional. A finding ID cannot be used — IDs are assigned per run — so
+ARC's own comment supplies the fingerprint and a verdict on the same file and line is
+taken to answer it. A verdict written anywhere else has nothing to attach to and is
+ignored rather than guessed at. Only ARC's own comments supply fingerprints, so a
+fabricated marker can at most name a finding that was never published.
+
+**Two rules, and the split between them is the whole design.**
+
+A dismissed finding never returns to the diff — commenting again on a line someone
+explicitly closed is how a tool gets muted. But a dismissal cannot delete a
+**blocker** or a **security** finding: those move to the review body with the
+dismissal recorded, because the one thing worse than a noisy reviewer is a silent one
+that was told to stay quiet about something serious.
+
+Everything is stated before it takes effect. A withheld finding nobody can see is
+indistinguishable from one that was never found:
+
+```text
+Human Dismissals
+
+  3f2a1c8e9b04 FALSE-POSITIVE   by maria at internal/payment/retry.go:84
+
+Blocker and security findings are still reported in the review body.
+```
+
+It is **opt-in** for one reason: anyone who can comment on a pull request can write a
+dismissal, and ARC does not check whether they own the code. On a repository where
+comment access is wider than merge access, leaving the flag off is the right choice.
+The verdict also lives only in the pull request's comments — there is no store — so
+it applies to that pull request and nothing else.
 
 #### Policy is code-owned
 
@@ -1332,6 +1388,7 @@ non-test file rejects `http.MethodPut`/`Patch`/`Delete`, `"PUT"`/`"PATCH"`/`"DEL
 | Connector capabilities are read-only | fixed GET/catalog operations; no source can supply a URL, command, or SQL query |
 | Prompt injection contained | repository, external, and comment content stays inside `<repository_data>`, with escape attempts defused |
 | A commenter cannot switch off the review | comments are evidence about intent; they reach no threshold, quota, or disposition, and instructions inside them are reportable, not obeyed |
+| A dismissal cannot hide a serious finding | dismissals are opt-in, require an explicit `arc:` verdict on the finding's own line, and demote blocker and security findings to the review body rather than removing them |
 | Policy cannot be widened remotely | thresholds and limits live in code, not in repository files |
 | A change cannot weaken its own review | rules are authoritative from the base branch only; head-branch rule text never enters the review context, and a missing base ref is refused |
 | Credentials never surface | header-only, redacted from API messages and transport errors |

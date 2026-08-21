@@ -56,6 +56,12 @@ const (
 	// ReasonTotalLimit means the overall published-finding bound was reached.
 	ReasonTotalLimit ReasonCode = "total_limit"
 
+	// ReasonHumanDismissed means a person explicitly closed this finding on the pull
+	// request. It is the only reason code that comes from outside this tool, and it
+	// can never delete a blocker or a security finding — those are demoted to the
+	// review body with the dismissal recorded instead.
+	ReasonHumanDismissed ReasonCode = "human_dismissed"
+
 	// ReasonAlreadyReported means a previous ARC review of this pull request already
 	// published this finding. It demotes an inline comment to the body rather than
 	// suppressing it: the finding still stands, but re-commenting on a line the author

@@ -185,7 +185,7 @@ func (p Policy) BuildPlan(
 }
 
 // BuildPlanWithHistory decides dispositions knowing what a previous ARC review of
-// the same pull request already published.
+// the same pull request already published, and what humans have said about it.
 //
 // History changes placement and nothing else. A finding ARC already reported is
 // still a finding: it moves from a line comment to the body, so a second review
@@ -205,6 +205,7 @@ func (p Policy) BuildPlanWithHistory(
 	decisions := make([]Decision, 0, len(candidates))
 	for _, candidate := range candidates {
 		decision := p.evaluate(candidate, mapper)
+		decision = applyDismissal(decision, history.Dismissals)
 		decisions = append(decisions, demoteIfAlreadyReported(decision, history))
 	}
 
