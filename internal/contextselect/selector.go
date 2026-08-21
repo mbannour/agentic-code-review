@@ -133,6 +133,16 @@ func (s *Selector) SelectWithRetrieval(
 
 	// Fixed-allowance sections first: the ticket, repository rules, external
 	// evidence, and analysis. Each is capped, so none can starve the diffs.
+	// The description and the conversation share one allowance. Both answer the
+	// same question — what did the people involved intend — and the description
+	// takes what it needs first because the author's own statement of intent
+	// outranks a remark about it.
+	description, discussion, discussionBytes, discussionOriginal :=
+		selectDiscussion(reviewCtx.PullRequest.Body, reviewCtx.Discussion.Comments, budget)
+	selected.PullRequest.Description = description.Content
+	selected.PullRequest.DescriptionTruncated = description.Truncated
+	selected.Discussion = discussion
+
 	ticket, ticketBytes, ticketOriginal := selectTicket(reviewCtx.Ticket, budget)
 	selected.Ticket = ticket
 
@@ -149,14 +159,15 @@ func (s *Selector) SelectWithRetrieval(
 	}
 
 	evidenceBudget := budget
-	evidenceBudget.Evidence = minInt(budget.Evidence, remainingBudget(budget.Total, ticketBytes+ruleBytes))
+	evidenceBudget.Evidence = minInt(budget.Evidence,
+		remainingBudget(budget.Total, discussionBytes+ticketBytes+ruleBytes))
 	documents, evidenceBytes, evidenceOriginal, evidenceDropped :=
 		selectEvidence(reviewCtx.Evidence.Documents, evidenceBudget)
 	selected.Evidence = documents
 
 	analysisBudget := budget
 	analysisBudget.Analysis = minInt(budget.Analysis,
-		remainingBudget(budget.Total, ticketBytes+ruleBytes+evidenceBytes))
+		remainingBudget(budget.Total, discussionBytes+ticketBytes+ruleBytes+evidenceBytes))
 	if analysisBudget.PerCheckOutput > analysisBudget.Analysis {
 		analysisBudget.PerCheckOutput = analysisBudget.Analysis
 	}
@@ -166,8 +177,11 @@ func (s *Selector) SelectWithRetrieval(
 	stats.CandidateEvidence = len(reviewCtx.Evidence.Documents)
 	stats.SelectedEvidence = len(documents)
 	stats.DroppedEvidence = evidenceDropped
-	stats.OriginalBytes = ticketOriginal + ruleOriginal + evidenceOriginal + analysisOriginal
-	stats.SelectedBytes = ticketBytes + ruleBytes + evidenceBytes + analysisBytes
+	stats.CandidateComments = len(reviewCtx.Discussion.Comments)
+	stats.SelectedComments = len(discussion)
+	stats.OriginalBytes = discussionOriginal + ticketOriginal + ruleOriginal +
+		evidenceOriginal + analysisOriginal
+	stats.SelectedBytes = discussionBytes + ticketBytes + ruleBytes + evidenceBytes + analysisBytes
 
 	// Whatever is left belongs to the changed patches.
 	remaining := budget.Total - stats.SelectedBytes
@@ -496,6 +510,80 @@ func selectRules(documents []review.RuleDocument, budget Budget) ([]SelectedRule
 	}
 
 	return rules, usedBytes, original
+}
+
+// boundedText is a piece of text after the budget has been applied to it.
+type boundedText struct {
+	Content   string
+	Truncated bool
+}
+
+// selectDiscussion fits the pull request description and the human comments into
+// the discussion allowance.
+//
+// Order is the policy: the description first, because the author's own statement
+// of what the change is for is the most useful sentence in the conversation, then
+// comments on diff lines, then general conversation. Inline comments come before
+// general ones because a remark attached to a line is about the code under review,
+// while a general one is often about process.
+//
+// A comment is kept whole or dropped. Half a comment is worse than none: an
+// explanation cut before its "but" reverses its meaning.
+func selectDiscussion(
+	description string,
+	comments []review.Comment,
+	budget Budget,
+) (boundedText, []SelectedComment, int, int) {
+	remaining := budget.Discussion
+	original := len(strings.TrimSpace(description))
+
+	var bounded boundedText
+	if trimmed := strings.TrimSpace(description); trimmed != "" {
+		switch {
+		case len(trimmed) <= remaining:
+			bounded.Content = trimmed
+			remaining -= len(trimmed)
+		case remaining > len(MarkerDescription)+1:
+			content, truncated := truncateTo(trimmed, remaining-len(MarkerDescription)-1, MarkerDescription)
+			bounded.Content = content
+			bounded.Truncated = truncated
+			remaining = 0
+		default:
+			remaining = 0
+		}
+	}
+
+	var selected []SelectedComment
+	for _, comment := range orderComments(comments) {
+		original += len(comment.Body)
+		if len(comment.Body) > remaining {
+			continue
+		}
+		remaining -= len(comment.Body)
+		selected = append(selected, SelectedComment{
+			Kind: comment.Kind, Author: comment.Author, Body: comment.Body,
+			Path: comment.Path, Line: comment.Line, Truncated: comment.Truncated,
+		})
+	}
+
+	return bounded, selected, budget.Discussion - remaining, original
+}
+
+// orderComments puts comments on diff lines before general conversation, keeping
+// the original order within each group.
+func orderComments(comments []review.Comment) []review.Comment {
+	ordered := make([]review.Comment, 0, len(comments))
+	for _, comment := range comments {
+		if comment.Path != "" {
+			ordered = append(ordered, comment)
+		}
+	}
+	for _, comment := range comments {
+		if comment.Path == "" {
+			ordered = append(ordered, comment)
+		}
+	}
+	return ordered
 }
 
 // selectEvidence keeps external documents in explicit configuration order. A

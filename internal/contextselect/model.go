@@ -64,6 +64,10 @@ type SelectedContext struct {
 	Evidence []SelectedEvidence
 	Analysis []SelectedAnalysis
 
+	// Discussion is the human conversation on the pull request, in the order it
+	// will be presented: conversation comments, then comments on diff lines.
+	Discussion []SelectedComment
+
 	// ProposedRuleChanges are the review-policy changes this pull request proposes.
 	// They are metadata for a human, not criteria for a reviewer.
 	ProposedRuleChanges []ProposedRuleChange
@@ -93,6 +97,13 @@ type PullRequestSummary struct {
 	HeadBranch string
 	HeadSHA    string
 	Draft      bool
+
+	// Description is the pull request body: what the author says this change is
+	// for. Untrusted text, bounded by the discussion budget.
+	Description string
+
+	// DescriptionTruncated reports whether Description was cut to fit.
+	DescriptionTruncated bool
 }
 
 // Slug renders the repository as "owner/repo".
@@ -154,6 +165,29 @@ type SelectedRule struct {
 
 	OriginalBytes int
 	Truncated     bool
+}
+
+// SelectedComment is one human remark kept in the selection.
+type SelectedComment struct {
+	Kind   string
+	Author string
+	Body   string
+
+	Path string
+	Line int
+
+	Truncated bool
+}
+
+// Location renders an inline comment's position, or an empty string.
+func (c SelectedComment) Location() string {
+	if c.Path == "" {
+		return ""
+	}
+	if c.Line <= 0 {
+		return c.Path
+	}
+	return c.Path + ":" + strconv.Itoa(c.Line)
 }
 
 // ProposedRuleChange is a rule file the change under review touches, carried
@@ -312,6 +346,10 @@ type SelectionStats struct {
 	SelectedCode     int
 	DroppedCode      int
 	RetrievalSkipped string
+
+	// Discussion counts describe the human conversation.
+	CandidateComments int
+	SelectedComments  int
 
 	// OriginalBytes is the total size of everything offered to the selector:
 	// every candidate patch, rule document, external evidence document, analysis

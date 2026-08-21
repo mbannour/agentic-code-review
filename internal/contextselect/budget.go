@@ -14,6 +14,11 @@ const (
 	DefaultEvidenceBudgetBytes = 40 * 1024
 	DefaultAnalysisBudgetBytes = 30 * 1024
 
+	// DefaultDiscussionBudgetBytes caps the pull request description and the human
+	// comments together. The conversation is context about intent, and a long
+	// argument is not more intent than a short one.
+	DefaultDiscussionBudgetBytes = 16 * 1024
+
 	// DefaultRetrievalBudgetBytes caps the unchanged code retrieved for context.
 	// It is spent only after the changed patches have taken what they need:
 	// context about the change must never crowd out the change itself.
@@ -39,6 +44,8 @@ const (
 	MarkerEvidence          = "[TRUNCATED: external evidence exceeded context budget]"
 	MarkerAnalysis          = "[TRUNCATED: check output exceeded context budget]"
 	MarkerRetrieval         = "[TRUNCATED: retrieved code exceeded context budget]"
+	MarkerDescription       = "[TRUNCATED: pull request description exceeded context budget]"
+	MarkerDiscussion        = "[TRUNCATED: discussion exceeded context budget]"
 	MarkerTicketDescription = "[TRUNCATED: Jira description exceeded context limit]"
 )
 
@@ -59,6 +66,9 @@ type Budget struct {
 	// Retrieval caps the combined unchanged-code snippets.
 	Retrieval int
 
+	// Discussion caps the description and comments together.
+	Discussion int
+
 	// TicketDescription caps the Jira description.
 	TicketDescription int
 
@@ -73,6 +83,7 @@ func DefaultBudget() Budget {
 		Rules:             DefaultRulesBudgetBytes,
 		Evidence:          DefaultEvidenceBudgetBytes,
 		Retrieval:         DefaultRetrievalBudgetBytes,
+		Discussion:        DefaultDiscussionBudgetBytes,
 		Analysis:          DefaultAnalysisBudgetBytes,
 		TicketDescription: DefaultTicketBudgetBytes,
 		PerCheckOutput:    DefaultPerCheckOutputBytes,
@@ -99,6 +110,9 @@ func (b Budget) normalized() Budget {
 	if b.Retrieval <= 0 {
 		b.Retrieval = defaults.Retrieval
 	}
+	if b.Discussion <= 0 {
+		b.Discussion = defaults.Discussion
+	}
 	if b.TicketDescription <= 0 {
 		b.TicketDescription = defaults.TicketDescription
 	}
@@ -118,6 +132,9 @@ func (b Budget) normalized() Budget {
 	}
 	if b.Retrieval > b.Total {
 		b.Retrieval = b.Total
+	}
+	if b.Discussion > b.Total {
+		b.Discussion = b.Total
 	}
 	if b.TicketDescription > b.Total {
 		b.TicketDescription = b.Total

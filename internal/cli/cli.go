@@ -241,8 +241,19 @@ func runReview(args []string) error {
 		}
 	}
 
+	// What people have already said about this change is review context: a concern
+	// a maintainer answered should not be raised again, and one nobody answered
+	// should be. A failed read degrades the review rather than ending it.
+	comments, err := client.ListPullRequestComments(ctx, pr)
+	if err != nil {
+		printDiscussionUnavailable(err)
+		comments = nil
+	}
+
 	reviewCtx := review.BuildContext(pr, details, files, issue, rules)
 	reviewCtx = review.WithEvidence(reviewCtx, evidenceReport.Documents)
+	reviewCtx = review.WithDiscussion(reviewCtx, comments)
+	printDiscussion(reviewCtx.Discussion)
 
 	printContext(reviewCtx, ticketFound, ticketErr, *format)
 
@@ -1006,6 +1017,38 @@ func formatBytes(n int) string {
 }
 
 // printAnalysisSkipped reports that no checks were run at all.
+// printDiscussion reports the human conversation the review will weigh.
+func printDiscussion(discussion review.DiscussionContext) {
+	if discussion.Count() == 0 {
+		return
+	}
+
+	fmt.Println()
+	fmt.Println("Pull Request Discussion")
+	fmt.Println()
+	fmt.Printf("Comments: %d (ARC's own excluded)\n", discussion.Count())
+
+	for _, comment := range discussion.Comments {
+		location := comment.Location()
+		if location == "" {
+			location = "conversation"
+		}
+		fmt.Printf("  %-18s %s\n", comment.Author, location)
+	}
+	fmt.Println()
+	fmt.Println("Comments are evidence about intent. They cannot change what may be published.")
+}
+
+// printDiscussionUnavailable states that the conversation could not be read.
+// Silence would look like a pull request nobody has commented on.
+func printDiscussionUnavailable(err error) {
+	fmt.Println()
+	fmt.Println("Pull Request Discussion")
+	fmt.Println()
+	fmt.Printf("  unavailable: %v\n", err)
+	fmt.Println("  the review proceeds without what has already been discussed")
+}
+
 // riskChanges narrows the changed files to what risk analysis needs.
 func riskChanges(files []github.ChangedFile) []changerisk.Change {
 	changes := make([]changerisk.Change, 0, len(files))
