@@ -179,6 +179,62 @@ arc review --pr https://github.com/acme/payments/pull/123 --repo-dir . --claude
 arc review --pr https://github.com/acme/payments/pull/123 --repo-dir . --claude --publish
 ```
 
+### Mutation benchmark
+
+Labelled pull requests measure ARC against human judgement. The mutation benchmark
+measures it against ground truth that was *generated* rather than judged: a known
+defect is seeded into real code, and whether ARC finds it is not a matter of opinion.
+
+Eight defects are seeded into ARC's own source — a deleted guard, an inverted
+comparison, `O_EXCL` become `O_TRUNC`, an assertion turned into `if false` — each one
+a real invariant of this codebase removed the way a developer plausibly would. Three
+clean controls change nothing that matters: a reworded comment, a renamed local, a
+condition rewritten to an equivalent form. The correct answer there is silence, and
+silence is the half most reviewers fail.
+
+```sh
+ARC_BENCHMARK=1 go test ./internal/benchmark/ -run TestMutationBenchmark -v -timeout 55m
+```
+
+It is gated behind `ARC_BENCHMARK` because it invokes Claude once per case plus once
+per candidate finding. The harness runs the real reviewer, the real verifier, and the
+real publication policy; only GitHub, Jira, and publishing are absent.
+
+**Result at commit `967df3d`, 11 cases, 5m31s:**
+
+| | |
+| --- | --- |
+| Seeded defects detected | 8 / 8 |
+| Clean controls that stayed silent | 3 / 3 |
+| Unrelated findings published | 0 |
+| Failed runs | 0 |
+| Recall / precision / clean rate | 1.00 / 1.00 / 1.00 |
+
+Every case published exactly one finding, localized to the mutated lines, with the
+severity and category a reviewer would choose — including `HIGH testing` for the
+disabled assertion rather than a generic correctness complaint.
+
+**What it does not show.** These are single-file diffs of a few lines, in a codebase
+whose invariants are documented three lines from where they are broken. A real pull
+request is twenty-seven files of interacting change. Precision here counts any
+unrelated finding as false, so it can only understate. And the model is not
+deterministic: an earlier trial produced *detected* and *suppressed* on separate runs
+of the same case, so a single run of anything is noise.
+
+**The benchmark's most useful output was a flaw in itself.** The first run scored 0.57
+recall, and every suppression was the verifier saying it had read the file and the
+code the finding described was not there. It was right: the mutation existed in the
+diff but not on disk, so the harness was measuring itself. Seeding each mutant into a
+throwaway copy of the checkout — which is where verification and retrieval read from —
+took recall from 0.57 to 1.00. The episode is kept in the package documentation
+because it is also the clearest evidence available that the verifier reads code rather
+than agreeing with the reviewer.
+
+The whole harness lives in test files. It writes temporary copies of the checkout, and
+the source scan behind the no-write invariant covers every non-test file;
+allow-listing the package would have weakened a security guarantee to buy a
+measurement.
+
 ### Labelled evaluation
 
 `arc evaluate` measures a captured reviewer run against human-labelled issues without
@@ -1573,6 +1629,8 @@ internal/findings/        review domain model: strict decoding, validation, limi
                           duplicate rejection, local rendering
 internal/verification/    verdict model, strict decoding, validation, and the
                           targeted per-finding context builder
+internal/benchmark/       mutation benchmark: seeded defects with generated ground
+                          truth, run through the real pipeline (test files only)
 internal/evaluation/      strict labelled datasets, deterministic one-to-one
                           matching, precision/recall/F1, report rendering, and
                           prediction capture (the one local write)
